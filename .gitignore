@@ -9,7 +9,7 @@
 
 # Local agent/tooling state
 .claude/settings.local.json
-.agents/
+.agents/*
 
 # Secrets / local env
 .env
