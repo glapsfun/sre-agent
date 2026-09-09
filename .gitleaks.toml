@@ -1,0 +1,13 @@
+# gitleaks configuration for sre-agent.
+#
+# This repository is documentation: skill reference guides may embed EXAMPLE
+# credentials (placeholder tokens, sample endpoints) to illustrate
+# Kubernetes/observability configuration. Any example-bearing docs are
+# allowlisted below. Everything else is scanned with the default rules.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation files containing illustrative example secrets"
+paths = []
