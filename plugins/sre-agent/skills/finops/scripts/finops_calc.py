@@ -262,6 +262,35 @@ def quantize_money(value: str) -> str:
     return format(Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
 
 
+def display_number(value: str) -> str:
+    """Thousands separators and readable decimals. For display only, never for math."""
+    if value == UNDEFINED:
+        return UNDEFINED
+    text = format(Decimal(value), "f")
+    if "." in text:
+        whole, fraction = text.split(".")
+        if len(fraction) > 2:
+            fraction = fraction[:6].rstrip("0").ljust(2, "0")
+        text = f"{whole}.{fraction}"
+    return format(Decimal(text), ",f")
+
+
+def fill_formula(name: str, values: dict) -> str:
+    """The calculation's formula with its input values filled in."""
+    formula = FORMULAS[name]
+    if name == "realized_savings":
+        if "baseline_usage" in values:
+            formula = "{baseline_cost} / {baseline_usage} * {post_usage} - {post_cost}"
+        else:
+            formula = "{baseline_cost} - {post_cost}, not normalized for usage"
+    joiner = {"sum": " + ", "product": " * "}.get(name, ", ")
+    filled = {
+        key: joiner.join(display_number(item) for item in value) if isinstance(value, list) else display_number(value)
+        for key, value in values.items()
+    }
+    return formula.format(**filled)
+
+
 def _month_key(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}"
 
