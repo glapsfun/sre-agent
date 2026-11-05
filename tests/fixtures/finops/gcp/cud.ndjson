@@ -1,0 +1,5 @@
+{"currency": "USD", "invoice": {"month": "2026-08"}, "service": {"description": "Compute Engine"}, "sku": {"description": "N2 Core"}, "cost": 100.0, "credits": [{"name": "CUD", "amount": -100.0, "type": "COMMITTED_USAGE_DISCOUNT_DOLLAR_BASE"}]}
+{"currency": "USD", "invoice": {"month": "2026-08"}, "service": {"description": "Compute Engine"}, "sku": {"description": "Commitment v1: Core"}, "cost": 72.0, "credits": []}
+{"currency": "USD", "invoice": {"month": "2026-09"}, "service": {"description": "Compute Engine"}, "sku": {"description": "N2 Core"}, "cost": 72.0, "credits": []}
+{"currency": "USD", "invoice": {"month": "2026-09"}, "service": {"description": "Compute Engine"}, "sku": {"description": "Commitment v1: Core"}, "cost": 72.0, "credits": [{"name": "Offset", "amount": -72.0, "type": "FEE_UTILIZATION_OFFSET"}]}
+{"currency": "USD", "invoice": {"month": "2026-07"}, "service": {"description": "Compute Engine"}, "sku": {"description": "N2 Core"}, "cost": 500.0, "credits": [{"name": "promo", "amount": -5.0, "type": "PROMOTION"}]}

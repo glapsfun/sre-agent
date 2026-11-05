@@ -8,7 +8,7 @@ from pathlib import Path
 
 from support import SCRIPTS
 
-from finops_guard import BudgetError, GuardError, check_bounded, check_read_only, load_query, record_use, require_budget
+from finops_guard import BudgetError, GuardError, check_bounded, check_read_only, load_query, record_use, require_budget, strip_leading_comments
 from finops_record import init_run, load_run, save_run
 
 SQL_DIR = SCRIPTS.parent / "sql"
@@ -118,6 +118,19 @@ class LoadQuery(unittest.TestCase):
             names = set(re.findall(r"\{\{(\w+)\}\}", path.read_text(encoding="utf-8")))
             with self.subTest(path=path.name):
                 check_read_only(load_query(path, {name: "x" for name in names}))
+
+
+class LeadingComments(unittest.TestCase):
+    def test_comments_before_the_statement_are_removed(self):
+        self.assertEqual(strip_leading_comments("-- a\n-- b\n\nSELECT 1 -- c\n"), "SELECT 1 -- c\n")
+
+    def test_block_comment_before_the_statement_is_removed(self):
+        self.assertEqual(strip_leading_comments("/* a */\nSELECT 1"), "SELECT 1")
+
+    def test_shipped_queries_never_reach_a_cli_starting_with_dashes(self):
+        for path in sorted(SQL_DIR.glob("*.sql")):
+            with self.subTest(path=path.name):
+                self.assertRegex(strip_leading_comments(path.read_text(encoding="utf-8")), r"^(SELECT|WITH)\b")
 
 
 class Budget(unittest.TestCase):

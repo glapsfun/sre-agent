@@ -1,0 +1,4 @@
+{"job_id": "script", "user_email": "ci@example.test", "job_type": "QUERY", "statement_type": "SCRIPT", "parent_job_id": null, "total_bytes_billed": 100, "total_slot_ms": 1000, "creation_time": "2026-10-05T00:00:00Z"}
+{"job_id": "child-a", "user_email": "ci@example.test", "job_type": "QUERY", "statement_type": "SELECT", "parent_job_id": "script", "total_bytes_billed": 60, "total_slot_ms": 600, "creation_time": "2026-10-05T00:00:00Z"}
+{"job_id": "child-b", "user_email": "ci@example.test", "job_type": "QUERY", "statement_type": "SELECT", "parent_job_id": "script", "total_bytes_billed": 40, "total_slot_ms": 400, "creation_time": "2026-10-05T00:00:00Z"}
+{"job_id": "old", "user_email": "ci@example.test", "job_type": "QUERY", "statement_type": "SELECT", "parent_job_id": null, "total_bytes_billed": 999, "total_slot_ms": 999, "creation_time": "2026-08-01T00:00:00Z"}

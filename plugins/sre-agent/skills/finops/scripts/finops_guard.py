@@ -114,6 +114,20 @@ def load_query(path: Path, params: dict) -> str:
     return _PLACEHOLDER.sub(lambda match: params[match.group(1)], text)
 
 
+def strip_leading_comments(sql: str) -> str:
+    """Removes comments before the statement. A CLI could read text starting with
+    dashes as a flag, so this is what gets sent. Evidence keeps the full query."""
+    text = sql.lstrip()
+    while True:
+        if text.startswith("--") or text.startswith("#"):
+            _, _, text = text.partition("\n")
+        elif text.startswith("/*"):
+            _, _, text = text.partition("*/")
+        else:
+            return text
+        text = text.lstrip()
+
+
 def require_budget(run: dict, kind: str, amount: int = 0) -> int:
     """Returns what remains before this amount. Raises BudgetError if it doesn't fit."""
     if kind not in BUDGET_KINDS:

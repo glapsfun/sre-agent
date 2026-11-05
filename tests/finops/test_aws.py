@@ -189,6 +189,13 @@ class AthenaQuery(AwsCase):
         self.assertEqual(start[start.index("--profile") + 1], "billing-ro")
         self.assertEqual(validate(self.run_dir), [f for f in validate(self.run_dir) if f.code == "MISSING_FIELD"])
 
+    def test_query_text_never_starts_with_dashes_a_cli_could_read_as_a_flag(self):
+        self.approve()
+        self.stub_query()
+        self.run_query()
+        start = self.scenario.called("aws", "athena", "start-query-execution")[0]
+        self.assertRegex(start[start.index("--query-string") + 1], r"^SELECT")
+
     def test_every_page_of_results_reaches_the_file(self):
         self.approve()
         s = self.scenario

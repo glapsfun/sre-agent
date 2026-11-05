@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from finops_guard import BudgetError, GuardError, check_bounded, check_read_only, load_query, record_use, require_budget
+from finops_guard import BudgetError, GuardError, check_bounded, check_read_only, load_query, record_use, require_budget, strip_leading_comments
 from finops_record import RecordError, add_evidence, emit_external, failure_reason, gap, load_run, parse_params, run_cli, show_result
 from finops_report import fmt_bytes
 
@@ -199,7 +199,7 @@ def cmd_athena(args) -> int:
         return _budget_stop(exc)
 
     label = f"aws athena start-query-execution {args.query_file.name}"
-    start = _aws(args, "athena", "start-query-execution", "--work-group", args.workgroup, "--query-execution-context", f"Database={args.database}", "--query-string", sql)
+    start = _aws(args, "athena", "start-query-execution", "--work-group", args.workgroup, "--query-execution-context", f"Database={args.database}", "--query-string", strip_leading_comments(sql))
     code, out, err = run_cli(start)
     if code:
         gap(failure_reason(label, code, err), args.run_dir)

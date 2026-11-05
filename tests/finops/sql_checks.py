@@ -26,6 +26,7 @@ REWRITES = {
     # DuckDB's bare NUMERIC has scale 3; BigQuery's has scale 9.
     "numeric": lambda sql: re.sub(r"\bAS NUMERIC\b", "AS DECIMAL(38, 9)", sql),
     # Athena's element_at returns a map's value; DuckDB's returns a one-item list.
+    "format_timestamp": lambda sql: re.sub(r"FORMAT_TIMESTAMP\('%Y-%m', (\w+)\)", r"strftime(\1, '%Y-%m')", sql),
     "element_at": lambda sql: re.sub(r"element_at\((\w+), ('[^']*')\)", r"\1[\2]", sql),
 }
 
@@ -41,7 +42,7 @@ GCP_BILLING_COLUMNS = {
     "sku": "STRUCT(id VARCHAR, description VARCHAR)",
     "location": "STRUCT(location VARCHAR)",
     "project": "STRUCT(id VARCHAR, name VARCHAR)",
-    "usage": "STRUCT(amount DOUBLE, unit VARCHAR)",
+    "usage": "STRUCT(amount DOUBLE, unit VARCHAR, amount_in_pricing_units DOUBLE, pricing_unit VARCHAR)",
     "cost": "DOUBLE",
     "credits": "STRUCT(name VARCHAR, amount DOUBLE, type VARCHAR)[]",
     "labels": "STRUCT(key VARCHAR, value VARCHAR)[]",
@@ -70,6 +71,24 @@ AWS_CUR_COLUMNS = {
 
 FIXTURE_COLUMNS = {
     "gcp/billing.ndjson": GCP_BILLING_COLUMNS,
+    "gcp/cud.ndjson": {
+        "currency": "VARCHAR",
+        "invoice": "STRUCT(month VARCHAR)",
+        "service": "STRUCT(description VARCHAR)",
+        "sku": "STRUCT(description VARCHAR)",
+        "cost": "DOUBLE",
+        "credits": "STRUCT(name VARCHAR, amount DOUBLE, type VARCHAR)[]",
+    },
+    "gcp/jobs.ndjson": {
+        "job_id": "VARCHAR",
+        "user_email": "VARCHAR",
+        "job_type": "VARCHAR",
+        "statement_type": "VARCHAR",
+        "parent_job_id": "VARCHAR",
+        "total_bytes_billed": "BIGINT",
+        "total_slot_ms": "BIGINT",
+        "creation_time": "TIMESTAMP",
+    },
     "aws/cur2.ndjson": {**AWS_CUR_COLUMNS, "billing_period": "VARCHAR", "resource_tags": "MAP(VARCHAR, VARCHAR)"},
     "aws/cur-legacy.ndjson": {**AWS_CUR_COLUMNS, "year": "VARCHAR", "month": "VARCHAR", "bill_billing_period_start_date": "TIMESTAMP", "resource_tags_user_team": "VARCHAR"},
 }
@@ -94,6 +113,7 @@ class Case:
 GCP_OCT = {"table": "billing", "invoice_month": "2026-10"}
 AWS_OCT = {"table": "cur", "period": "2026-10"}
 LEGACY_OCT = {"table": "cur", "year": "2026", "month": "10"}
+GCP_REWRITES = ["backticks", "numeric"]
 
 CASES = [
     Case(
@@ -110,6 +130,22 @@ CASES = [
         [{"cost": "600.00", "credits": "-50.00"}],
         negative=True,
     ),
+    Case("gcp-drivers.sql", GCP_OCT, "gcp/billing.ndjson", None, rewrites=GCP_REWRITES, totals={"net_cost": "355.30", "cost": "390.30", "credits": "-35.00"}),
+    Case("gcp-no-owner.sql", {**GCP_OCT, "owner_label": "team"}, "gcp/billing.ndjson", [{"invoice_month": "2026-10", "currency": "USD", "no_owner_cost": "90.30"}], rewrites=GCP_REWRITES),
+    Case("gcp-effective.sql", {"table": "billing", "usage_start": "2026-10-01", "usage_end": "2026-11-01"}, "gcp/billing.ndjson", [{"usage_month": "2026-10", "currency": "USD", "effective_cost": "325.30"}], rewrites=[*GCP_REWRITES, "format_timestamp"]),
+    Case(FIXTURES / "gcp/naive-usage-month.sql", {"table": "billing", "invoice_month": "2026-10"}, "gcp/billing.ndjson", [{"net_cost": "325.30"}], negative=True),
+    Case("gcp-freshness.sql", GCP_OCT, "gcp/billing.ndjson", [{"max_usage_end": "2026-11-01 00:00:00", "max_export_time": "2026-11-03 06:00:00"}], rewrites=GCP_REWRITES),
+    Case(
+        "gcp-cud.sql",
+        {"table": "billing", "first_month": "2026-08", "second_month": "2026-09"},
+        "gcp/cud.ndjson",
+        [
+            {"invoice_month": "2026-08", "usage_cost": "100.00", "credits": "-100.00", "fee_cost": "72.00", "net_cost": "72.00"},
+            {"invoice_month": "2026-09", "usage_cost": "72.00", "credits": "-72.00", "fee_cost": "72.00", "net_cost": "72.00"},
+        ],
+        rewrites=GCP_REWRITES,
+    ),
+    Case("gcp-bq-job-cost.sql", {"table": "jobs", "start_date": "2026-10-01", "end_date": "2026-11-01"}, "gcp/jobs.ndjson", [{"user_email": "ci@example.test", "total_bytes_billed": "100", "total_slot_ms": "1000"}], rewrites=GCP_REWRITES),
     Case("aws-cur2-control-total.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00"}]),
     Case("aws-cur2-effective.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "effective_cost": "203.00"}]),
     Case("aws-cur2-effective.sql", {"table": "cur", "period": "2026-08"}, "aws/cur2.ndjson", [{"billing_period": "2026-08", "currency": "USD", "effective_cost": "5.00"}]),

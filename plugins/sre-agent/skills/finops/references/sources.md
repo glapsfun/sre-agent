@@ -19,6 +19,11 @@ Checked 2026-11-05 unless noted.
 | `cost-optimization-hub list-recommendations` returns `estimatedMonthlySavings` and can dedupe by resource | [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/cost-optimization-hub/list-recommendations.html) |
 | Athena's per-query limit is a workgroup setting, 10 MB minimum; it cancels the query, and cancelled queries are charged | [Athena docs](https://docs.aws.amazon.com/athena/latest/ug/workgroups-setting-control-limits-cloudwatch.html) |
 | `bq --dry_run` reports bytes without billing; over `--maximum_bytes_billed`, a query fails without charge | [BigQuery docs](https://docs.cloud.google.com/bigquery/docs/best-practices-costs) |
+| `bq query` returns 100 rows unless `--max_rows` is set, and `bq show` needs `--location` for jobs | [bq reference](https://docs.cloud.google.com/bigquery/docs/reference/bq-cli-reference) |
+| Job fields `statistics.query.totalBytesBilled`, `statistics.query.totalBytesProcessed`, and `statistics.reservation_id` | [Job resource](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job) |
+| `INFORMATION_SCHEMA.JOBS` needs a region qualifier, and summing costs should exclude `SCRIPT` statements | [JOBS view](https://docs.cloud.google.com/bigquery/docs/information-schema-jobs) |
+| Detailed export columns, with `cost` and `credits.amount` as floats, cast to NUMERIC before summing | [Detailed usage schema](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage) |
+| Cloud Monitoring `projects.timeSeries.list` takes `filter` and `interval` | [Monitoring API](https://docs.cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.timeSeries/list) |
 | GCP export table names | [GCP docs](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables) |
 | FOCUS dataset naming | [GCP docs](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-focus-setup?hl=en) |
 | OpenCost `/allocation`, port 9003, parameters | [OpenCost docs](https://opencost.io/docs/integrations/api/) |
@@ -35,4 +40,6 @@ Checked 2026-11-05 unless noted.
 - That CUR 2.0 in Athena is partitioned on `billing_period`. The docs describe a Glue crawler loading partitions but don't name the column. Run `finops_aws.py schema` first, and use `--partition-column` if it differs.
 - That no Cloud Billing response schema exposes incurred cost. This rests on the REST
   reference's summary page and community replies.
+- The output format of `bq query --dry_run --format=json`. The docs don't describe it, so the script reads the job JSON and also the plain-text form.
+- GCP committed use fee SKU names and credit types. `gcp-cud.sql` looks for SKUs starting `Commitment` and three credit types, which need checking against real data. It reads only the billing export, not a separate CUD metadata table.
 - Kubecost's full parameter list, and routes for versions newer than 2.x.
