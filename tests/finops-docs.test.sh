@@ -92,4 +92,25 @@ if git ls-files -z "$skill/scripts" | xargs -0 grep -E 'gcloud[^|;]*\b(create|de
   fail "a script contains a mutating gcloud verb"
 fi
 
+# --- the plugin says the skill is there, and what it needs -----------------
+python3 - <<'PY_MANIFESTS'
+import json
+import sys
+
+for path in ("plugins/sre-agent/.claude-plugin/plugin.json", "plugins/sre-agent/.codex-plugin/plugin.json"):
+    with open(path, encoding="utf-8") as handle:
+        if "finops" not in json.load(handle).get("keywords", []):
+            sys.exit(f"{path} keywords don't include finops")
+
+with open(".claude-plugin/marketplace.json", encoding="utf-8") as handle:
+    if "finops" not in json.load(handle)["plugins"][0].get("tags", []):
+        sys.exit("marketplace tags don't include finops")
+PY_MANIFESTS
+
+for readme in README.md plugins/sre-agent/README.md; do
+  for phrase in '/finops' 'python3' "hasn't been tried on real accounts"; do
+    grep -qF "$phrase" "$readme" || fail "$readme doesn't mention: $phrase"
+  done
+done
+
 echo "PASS: finops docs"

@@ -69,6 +69,35 @@ After resolution you get a final incident report (summary, impact, timeline,
 root cause, actions, validation, rollback info, follow-ups) that you can save
 to your repo.
 
+## FinOps
+
+The plugin also ships a `finops` skill for cost questions on AWS, GCP, and Kubernetes. It's separate
+from incident response, and it never changes anything.
+
+```text
+/finops why did our AWS bill go up in October?
+Reconcile our October GCP invoice with the BigQuery billing export.
+Where can we save money on the search node pool, and is it safe?
+Run the monthly cost report again, and check whether last month's savings landed.
+Compare Kubecost's namespace costs with what we actually pay for the cluster.
+```
+
+It detects which billing data exists, asks once for a query budget, reconciles to the invoice, and saves
+a report under `docs/finops/`. Every number in the report is read from a saved query result, calculated
+by a script from such numbers, or marked as provided by a person, and a script proves this before the
+report is written. That guards against mistakes. It can't prove a query asked the right question, or that
+a cited cause is the true cause.
+
+- It needs `python3` 3.9 or newer. Without it, the skill stops after discovery.
+- GCP spend needs a billing export in BigQuery, and without one the report says so rather than estimating.
+- Reports hold real spend figures, so add `docs/finops/` to your `.gitignore`. The skill warns if it isn't.
+- Forecasting isn't included.
+
+It hasn't been tried on real accounts yet. Its tests use stubbed CLIs and synthetic data, with its SQL run
+in DuckDB, which proves query logic but not provider schemas. Treat the first live run as a trial.
+
+Install it alone with `npx skills add glapsfun/sre-agent --skill finops`, or get it with the plugin.
+
 ## What's inside
 
 | Component | Purpose |
@@ -80,6 +109,11 @@ to your repo.
 | `skills/sre-agent/references/` | Deep knowledge loaded on demand: discovery, PromQL (golden signals, kube-state, burn rates), LogQL and error taxonomy, Elasticsearch/OpenSearch query DSL, TraceQL/Jaeger tracing, deep Kubernetes evidence (nodes, NetworkPolicy, DNS, storage), service mesh (Istio/Linkerd), Grafana API discovery, root-cause analysis method, remediation templates, Terraform remediation (locating IaC-managed resources, safe plan reading, plan-classified apply/rollback), Pulumi remediation (locating IaC-managed resources, safe preview reading, preview-classified apply/rollback), Crossplane remediation (ownership detection, Ready/Synced condition and trace interpretation, status-check-verified apply/rollback), validation checklist and report format, k6 load validation, GitHub investigation via gh (repo discovery, change timeline, prior-incident and code search), sibling-skill deference (argocd/fluxcd/helm/bash-scripting/kubernetes-operator/karpenter/gh-guru/glab-guru), pinned official sources |
 | `skills/sre-agent/scripts/` | Read-only helpers: `sre-env-discovery.sh` (tools, cluster, GitOps, cloud), `sre-obs-discovery.sh` (Prometheus/Alertmanager/Grafana/Loki/Mimir/Tempo/Jaeger/Elasticsearch endpoints, service-mesh and k6 detection), `sre-evidence.sh <ns> <workload>` (one-shot evidence pack), `sre-snapshot.sh` (Phase 3 mutation verification: snapshot/diff spec-hash fingerprints around each wave's dispatch), `sre-gh-discovery.sh` (read-only GitHub discovery/search via gh: repo/timeline/incidents/code subcommands), `terraform-plan-check.sh <tf-dir>` (Phase 5/6 Terraform plan classification: no-op/create/update/delete/replace counts, flags any destroy/replace), `pulumi-preview-check.sh <stack-dir>` (Phase 5/6 Pulumi preview classification: same/create/update/delete/replace counts, flags any destroy/replace), `crossplane-status-check.sh [TYPE[.VERSION][.GROUP][/NAME]]` (Phase 2-6 Crossplane evidence and verification: classifies Provider/Managed/Composite Resource Installed/Healthy/Ready/Synced conditions), `install-codex-agents.sh` (Codex subagent install) |
 | `commands/sre-agent.md` | The `/sre-agent <problem>` entry point (Claude Code) |
+| `commands/finops.md` | The `/finops <question>` entry point (Claude Code) |
+| `skills/finops/SKILL.md` | The FinOps workflow: scope, discovery, budget approval, evidence, assurance, math, and report |
+| `skills/finops/references/` | AWS and GCP billing, Kubernetes cost, assurance, calculations, report fields, telemetry, troubleshooting, and which facts are confirmed |
+| `skills/finops/sql/` | Prepared billing queries for CUR 2.0, legacy CUR, and the GCP export, exercised on fixtures in DuckDB |
+| `skills/finops/scripts/` | `finops-discovery.sh` (no billable calls), `finops_aws.py`, `finops_gcp.py`, `finops_k8s.py`, and `finops_capture.py` (evidence), `finops_calc.py` (decimal math), `finops_record.py` and `finops_guard.py` (run record, read-only checks, budget), `finops_compare.py` (last report, past savings), `finops_validate.py` and `finops_report.py` (proof, then report) |
 
 ## Safety model
 
@@ -97,6 +131,9 @@ to your repo.
 - **Load generation is mutation-class** — the optional k6 validation step has
   its own approval gate, states target environment/RPS/duration/blast radius
   up front, and never targets production unless you explicitly say so.
+
+FinOps runs are advisory. They never buy commitments, resize anything, enable billing
+exports, or change IAM, and their queries run only under a budget you approve.
 
 ## Degraded environments
 

@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "sre-agent",
   "displayName": "SRE Agent",
-  "version": "0.14.0",
-  "description": "Agentic SRE orchestrator — investigates operational incidents through a TDD-inspired loop: discover the environment, collect evidence in parallel (Kubernetes, Prometheus metrics, Loki or Elasticsearch/OpenSearch logs, Tempo/Jaeger traces, service-mesh state, recent changes), rank root-cause hypotheses, propose remediation options with rollback plans, apply only after human approval, validate against explicit expected behavior — optionally under k6 load — and iterate until resolved",
+  "version": "0.15.0",
+  "description": "Agentic SRE orchestrator: investigates operational incidents through a TDD-inspired loop. It discovers the environment, collects evidence in parallel (Kubernetes, Prometheus metrics, Loki or Elasticsearch/OpenSearch logs, Tempo/Jaeger traces, service-mesh state, recent changes), ranks root-cause hypotheses, proposes remediation options with rollback plans, applies only after human approval, validates against explicit expected behavior, optionally under k6 load, and iterates until resolved. Also answers cloud cost questions on AWS, GCP, and Kubernetes with FinOps reports whose every number is proved against saved query results.",
   "author": {
     "name": "vladtara",
     "email": "vlad@glaps.fun"
@@ -28,6 +28,7 @@
     "eks",
     "aws",
     "gke",
-    "gcp"
+    "gcp",
+    "finops"
   ]
 }

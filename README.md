@@ -159,6 +159,35 @@ your repo under `docs/sre-incidents/`.
 See the [plugin README](plugins/sre-agent/README.md) for the full usage guide,
 the component breakdown, and the degraded-environment behavior.
 
+## FinOps
+
+The plugin also ships a `finops` skill for cost questions on AWS, GCP, and Kubernetes. It's separate
+from incident response, and it never changes anything.
+
+```text
+/finops why did our AWS bill go up in October?
+Reconcile our October GCP invoice with the BigQuery billing export.
+Where can we save money on the search node pool, and is it safe?
+Run the monthly cost report again, and check whether last month's savings landed.
+Compare Kubecost's namespace costs with what we actually pay for the cluster.
+```
+
+It detects which billing data exists, asks once for a query budget, reconciles to the invoice, and saves
+a report under `docs/finops/`. Every number in the report is read from a saved query result, calculated
+by a script from such numbers, or marked as provided by a person, and a script proves this before the
+report is written. That guards against mistakes. It can't prove a query asked the right question, or that
+a cited cause is the true cause.
+
+- It needs `python3` 3.9 or newer. Without it, the skill stops after discovery.
+- GCP spend needs a billing export in BigQuery, and without one the report says so rather than estimating.
+- Reports hold real spend figures, so add `docs/finops/` to your `.gitignore`. The skill warns if it isn't.
+- Forecasting isn't included.
+
+It hasn't been tried on real accounts yet. Its tests use stubbed CLIs and synthetic data, with its SQL run
+in DuckDB, which proves query logic but not provider schemas. Treat the first live run as a trial.
+
+Install it alone with `npx skills add glapsfun/sre-agent --skill finops`, or get it with the plugin.
+
 ## What it will never do
 
 - Mutate anything — scale, restart, patch, apply, rollback — before you
@@ -170,6 +199,8 @@ the component breakdown, and the degraded-environment behavior.
   read-only and mechanically verified as such via a state snapshot/diff.
 - Record secrets or credentials in the incident report — metadata and
   reasoning only.
+- Buy commitments, resize anything, enable billing exports, or change IAM from a
+  FinOps run. FinOps is advisory, and its queries run only under a budget you approve.
 
 ## Works best with
 
@@ -188,17 +219,26 @@ plugins/sre-agent/
 ├── .claude-plugin/plugin.json    # Claude Code plugin manifest
 ├── .codex-plugin/plugin.json     # Codex plugin manifest
 ├── commands/sre-agent.md         # /sre-agent slash command
+├── commands/finops.md            # /finops slash command
 ├── agents/                       # 7 read-only Claude subagents (generated)
-└── skills/sre-agent/
-    ├── SKILL.md                  # the orchestrator: loop, phase gates, safety rules
-    ├── agents/codex/             # the same 7 subagents as Codex TOML (generated)
+├── skills/sre-agent/
+│   ├── SKILL.md                  # the orchestrator: loop, phase gates, safety rules
+│   ├── agents/codex/             # the same 7 subagents as Codex TOML (generated)
+│   ├── evals/evals.json          # skill evals
+│   ├── references/               # playbooks: discovery, PromQL, LogQL, ES DSL,
+│   │   └── investigators/        #   TraceQL, mesh, RCA, remediation (Terraform,
+│   │                             #   Pulumi, Crossplane), validation, k6, memory
+│   └── scripts/                  # 11 read-only discovery/evidence helpers
+└── skills/finops/
+    ├── SKILL.md                  # the cost workflow, safety rules, ledger
+    ├── agents/openai.yaml        # Codex interface
     ├── evals/evals.json          # skill evals
-    ├── references/               # playbooks: discovery, PromQL, LogQL, ES DSL,
-    │   └── investigators/        #   TraceQL, mesh, RCA, remediation (Terraform,
-    │                             #   Pulumi, Crossplane), validation, k6, memory
-    └── scripts/                  # 11 read-only discovery/evidence helpers
+    ├── references/               # AWS and GCP billing, Kubernetes cost, assurance,
+    │                             #   calculations, report, telemetry, troubleshooting
+    ├── sql/                      # prepared billing queries
+    └── scripts/                  # discovery, query runners, math, validation, report
 scripts/                          # repo tooling: artifact generator + CI checks
-tests/                            # script tests
+tests/                            # script tests, SQL tests, synthetic fixtures
 ```
 
 ### Generated artifacts
