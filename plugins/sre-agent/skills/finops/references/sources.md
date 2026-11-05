@@ -12,6 +12,8 @@ Checked 2026-11-05 unless noted.
 | Cost Explorer costs $0.01 per request; hourly granularity over 14 days is charged separately | [AWS pricing](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/pricing/) |
 | Cost Explorer, Data Exports, and Cost Optimization Hub have a `us-east-1` endpoint only | [AWS endpoints](https://docs.aws.amazon.com/general/latest/gr/billing.html) |
 | `bcm-data-exports list-exports` returns name and status, including `LastRefreshedAt` | [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/bcm-data-exports/list-exports.html) |
+| `bcm-data-exports get-export` returns `Export.DataQuery.QueryStatement` and `TableConfigurations`; standard tables include CUR 2.0 and FOCUS 1.0 and 1.2 | [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/bcm-data-exports/get-export.html), [Data Exports](https://docs.aws.amazon.com/cur/latest/userguide/what-is-data-exports.html) |
+| Cost Optimization Hub enrollment is read with `list-enrollment-statuses` | [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/cost-optimization-hub/index.html) |
 | `invoicing list-invoice-summaries` returns invoice totals by billing period | [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/invoicing/list-invoice-summaries.html) |
 | `cost-optimization-hub list-recommendations` returns `estimatedMonthlySavings` and can dedupe by resource | [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/cost-optimization-hub/list-recommendations.html) |
 | Athena's per-query limit is a workgroup setting, 10 MB minimum; it cancels the query, and cancelled queries are charged | [Athena docs](https://docs.aws.amazon.com/athena/latest/ug/workgroups-setting-control-limits-cloudwatch.html) |
@@ -25,7 +27,7 @@ Checked 2026-11-05 unless noted.
 
 ## Not confirmed
 
-- That every discovery call is free.
+- That every discovery call is free. AWS documents a per-request charge only for Cost Explorer, which discovery never calls. The BigQuery pricing page could not be read when checked, so free dataset and table listing rests on general knowledge.
 - That Athena has no dry run or scan estimate. The page checked only doesn't mention one.
 - The `invoicing` service's endpoint region and required permissions.
 - That no Cloud Billing response schema exposes incurred cost. This rests on the REST

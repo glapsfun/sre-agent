@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO / "plugins/sre-agent/skills/finops/scripts"
 FIXTURES = REPO / "tests/fixtures/finops"
+STUB = Path(__file__).resolve().parent / "stubs/stub_cli.py"
+STUB_TOOLS = ("aws", "bq", "gcloud", "kubectl", "curl")
+BASE_TOOLS = ("bash", "env", "cat", "grep", "sed", "awk", "tr", "cut", "head", "tail", "sort", "date", "mktemp", "rm", "wc", "dirname")
 
 sys.path.insert(0, str(SCRIPTS))
 
@@ -31,6 +36,60 @@ def run_script(name, *args, env=None, cwd=None, stdin=None):
         input=stdin,
         check=False,
     )
+
+
+class Scenario:
+    """Stubbed CLIs for a test. Unmatched calls exit 99, so nothing passes by accident."""
+
+    def __init__(self, tmp):
+        self.dir = Path(tempfile.mkdtemp(prefix="stubs-", dir=tmp))
+        self.responses = []
+        self.tools = set(STUB_TOOLS)
+
+    def on(self, tool, *match, stdout="", stderr="", exit=0):
+        if isinstance(stdout, Path):
+            stdout = stdout.read_text(encoding="utf-8")
+        self.responses.append({"tool": tool, "match": list(match), "stdout": stdout, "stderr": stderr, "exit": exit})
+        self.tools.add(tool)
+        return self
+
+    def env(self, path=None):
+        (self.dir / "responses.json").write_text(json.dumps(self.responses))
+        for tool in self.tools:
+            wrapper = self.dir / tool
+            wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{STUB}" {tool} "$@"\n')
+            wrapper.chmod(0o755)
+        return {"PATH": f"{self.dir}:{path or os.environ['PATH']}", "FINOPS_STUB_DIR": str(self.dir)}
+
+    def _log(self):
+        log = self.dir / "calls.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text().splitlines()]
+
+    def calls(self):
+        return [entry["argv"] for entry in self._log()]
+
+    def stdin_of(self, index):
+        return self._log()[index]["stdin"]
+
+    def called(self, *match):
+        return [call for call in self.calls() if _contains_in_order(call, match)]
+
+
+def _contains_in_order(argv, match):
+    remaining = iter(argv)
+    return all(token in remaining for token in match)
+
+
+def make_path(tmp, *tools, base=True):
+    """A PATH holding only the named real tools, since /usr/bin can hold kubectl or aws."""
+    directory = Path(tempfile.mkdtemp(prefix="path-", dir=tmp))
+    for tool in (*(BASE_TOOLS if base else ()), *tools):
+        real = shutil.which(tool)
+        if real:
+            (directory / tool).symlink_to(real)
+    return str(directory)
 
 
 # The design's synthetic report: billing_period, item, amount, currency.
