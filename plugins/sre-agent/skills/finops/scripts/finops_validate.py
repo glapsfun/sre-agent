@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Proves a finops run record before a report can be rendered from it.
 
-Re-reads every raw result, recomputes every calculation, and checks that totals
-conserve. This guards against mistakes, not someone deliberately editing files,
-and it can't prove that a query asked the right question or that a cited cause
-is the true cause.
+Re-reads every raw result, recomputes every calculation, checks that totals
+conserve, and checks that each figure is the kind of thing its place in the report
+claims. This guards against mistakes, not someone deliberately editing files, and it
+can't prove that a query asked the right question or that a cited cause is the true
+cause.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from finops_calc import FORMULAS, UNDEFINED, CalcError, compute, too_early
-from finops_record import LocatorError, RecordError, is_closed, load_run, locate
+from finops_record import LocatorError, RecordError, is_closed, load_run, locate, raw_currency
 
 STATUS_NOT_RECONCILED = "Not reconciled"
 STATUS_OPEN = "Open period"
@@ -26,13 +27,23 @@ STATUS_PARTIAL = "Partial scope"
 STATUS_CROSS_CHECKED = "Cross-checked only"
 STATUS_RECONCILED = "Reconciled to invoice"
 
+PAST_LANDED = "Landed"
+PAST_BELOW_ESTIMATE = "Landed, below estimate"
+PAST_DID_NOT_LAND = "Did not land"
+PAST_CANNOT_MEASURE = "cannot measure"
+PAST_UNMEASURED = {"too early to measure", "not yet measured", "approved, not implemented", "rejected", PAST_CANNOT_MEASURE}
+
 LEDGER_ROW_KINDS = {"workload", "shared", "idle", "unallocated", "out_of_cluster"}
+OPPORTUNITY_TYPES = {"rightsizing", "other"}
 NON_MONEY_OUTPUTS = {"pct", "savings_pct", "residual_pct", "months", "utilization", "normalized"}
+QUANTITY_COLUMNS = {"quantity", "usage_amount"}
 MEASURED_EVIDENCE = {"billing", "telemetry"}
 ESTIMATED_EVIDENCE = {"recommendation", "allocation", "prior_run"}
+SAVINGS_TOTAL_CALCS = {"sum", "overlap_savings", "net_benefit"}
 
 _CALC_REF = re.compile(r"^(C\d+)\.(\w+)$")
 _MONEY = re.compile(r"[$€£]\s?\d|\b(?:USD|EUR|GBP)\s?\d|\d\s?(?:USD|EUR|GBP)\b")
+_PERIOD_VALUE = re.compile(r"^\d{4}-\d{2}")
 
 
 class RefError(Exception):
@@ -172,6 +183,11 @@ def derive_status(run: dict) -> tuple:
     problems: list = []
     open_periods: list = []
     cross_checked: list = []
+    if not partial:
+        covered = {entry.get("period") for entry in entries}
+        for period in (scope.get("period"), scope.get("comparison_period")):
+            if period and period not in covered:
+                problems.append(f"{period}: no reconciliation entry")
     for entry in entries:
         period = entry.get("period")
         if not entry.get("closed"):
@@ -205,6 +221,17 @@ def derive_status(run: dict) -> tuple:
     return STATUS_RECONCILED, f"within {tolerance}% of each invoice"
 
 
+def past_status(run: dict, item: dict) -> str:
+    """What a measured saving's result says, so a claim can't outrun its number."""
+    saving = _ref_number(run, item.get("result"))
+    if saving is None:
+        return PAST_CANNOT_MEASURE
+    if saving <= 0:
+        return PAST_DID_NOT_LAND
+    estimate = _ref_number(run, item.get("estimated"))
+    return PAST_BELOW_ESTIMATE if estimate is not None and saving < estimate else PAST_LANDED
+
+
 class _Checker:
     def __init__(self, run_dir: Path, run: dict):
         self.run_dir = run_dir
@@ -231,10 +258,20 @@ class _Checker:
         if isinstance(text, str) and _MONEY.search(text):
             self.fail("UNTAGGED_MONEY", where, "free text holds a money figure; use a figure or calculation reference")
 
-    def required(self) -> None:
-        # A run that found no billing data has nothing to date, and still gets a report.
-        if self.run.get("figures") and not self.run["scope"].get("data_through"):
-            self.fail("MISSING_FIELD", "scope.data_through", "the data-through date is required")
+    def all_refs(self, ref: object) -> set:
+        """A reference and every reference a calculation behind it rests on."""
+        seen: set = set()
+        stack = [ref]
+        while stack:
+            current = stack.pop()
+            if not isinstance(current, str) or current in seen:
+                continue
+            seen.add(current)
+            match = _CALC_REF.match(current)
+            calc = _find_calc(self.run, match.group(1)) if match else None
+            if calc:
+                stack.extend(item for item in _input_items(calc) if not _is_literal(item))
+        return seen
 
     def raw_results(self) -> None:
         for entry in self.run.get("evidence", []):
@@ -249,7 +286,9 @@ class _Checker:
         for name, figure in self.run.get("figures", {}).items():
             where = f"figures.{name}"
             kind = figure.get("kind")
-            if kind == "provided":
+            if _number(figure.get("value")) is None:
+                self.fail("FIGURE_MISMATCH", where, f"{figure.get('value')!r} isn't a number")
+            elif kind == "provided":
                 self.provided_figure(where, figure)
             elif kind in {"measured", "estimated"}:
                 self.located_figure(where, figure, kind)
@@ -260,8 +299,11 @@ class _Checker:
         entry = next((p for p in self.run.get("provided", []) if p.get("id") == figure.get("provided")), None)
         if entry is None:
             self.fail("UNRESOLVED_REF", where, f"no provided figure {figure.get('provided')}")
-        elif not _same(figure.get("value", ""), entry.get("value", "")):
+            return
+        if not _same(figure.get("value", ""), entry.get("value", "")):
             self.fail("FIGURE_MISMATCH", where, f"{figure.get('value')} differs from provided {entry.get('value')}")
+        if figure.get("currency") != entry.get("currency"):
+            self.fail("CURRENCY_UNPROVED", where, f"{figure.get('currency')} differs from the {entry.get('currency')} that was provided")
 
     def located_figure(self, where: str, figure: dict, kind: str) -> None:
         entry = self.evidence.get(figure.get("evidence"))
@@ -271,18 +313,26 @@ class _Checker:
         allowed = MEASURED_EVIDENCE if kind == "measured" else ESTIMATED_EVIDENCE
         if entry.get("kind") not in allowed:
             self.fail("FIGURE_KIND", where, f"a {kind} figure can't rest on {entry.get('kind')} evidence")
+        if entry.get("kind") == "telemetry" and figure.get("currency"):
+            self.fail("FIGURE_KIND", where, "telemetry can back a usage count, but not a money figure")
         if not entry.get("complete", False):
             self.fail("EVIDENCE_INCOMPLETE", where, f"{entry.get('id')} is incomplete and can't back a figure")
         path = self.run_dir / entry.get("raw_path", "")
         if not path.is_file():
             return
+        locator = figure.get("locator", {})
         try:
-            found = locate(path, figure.get("locator", {}))
+            found = locate(path, locator)
         except LocatorError as exc:
             self.fail("LOCATOR_FAILED", where, str(exc))
             return
         if not _same(figure.get("value", ""), found):
             self.fail("FIGURE_MISMATCH", where, f"{figure.get('value')} differs from {found} in {entry.get('raw_path')}")
+        stated = figure.get("currency")
+        proved = raw_currency(path, locator)
+        quantity = stated is None and locator.get("column") in QUANTITY_COLUMNS
+        if proved and stated != proved and not quantity:
+            self.fail("CURRENCY_UNPROVED", where, f"labeled {stated}, but {entry.get('raw_path')} says {proved}")
 
     def calculations(self) -> None:
         for calc in self.run.get("calculations", []):
@@ -332,28 +382,125 @@ class _Checker:
         today = datetime.now(timezone.utc).date()
         fields = ("invoice", "second_view", "query_total", "residual", "no_owner", "no_owner_share", "effective_total", "billed_effective_difference", "whole_bill_total", "scope_share")
         for entry in self.run.get("reconciliation", []):
-            where = f"reconciliation.{entry.get('period')}"
+            period = entry.get("period")
+            where = f"reconciliation.{period}"
             for field in fields:
                 self.check_ref(f"{where}.{field}", entry.get(field))
-            if entry.get("closed"):
-                try:
-                    if not is_closed(str(entry.get("period")), today):
-                        self.fail("STATUS_CLAIM", where, "marked closed, but the period hasn't ended")
-                except ValueError:
-                    self.fail("STATUS_CLAIM", where, f"unreadable period {entry.get('period')!r}")
-            control = _ref_number(self.run, entry.get("invoice") or entry.get("second_view"))
+            self.closed_flag(where, entry, today)
+            self.invoice_role(where, entry)
+            self.query_role(f"{where}.query_total", entry.get("query_total"), period)
+            self.second_view_role(where, entry)
+            self.reconciliation_currency(where, entry)
+
+            invoice = _ref_number(self.run, entry.get("invoice"))
+            control = invoice if invoice is not None else _ref_number(self.run, entry.get("second_view"))
             query = _ref_number(self.run, entry.get("query_total"))
             residual = _ref_number(self.run, entry.get("residual"))
+            if invoice is not None and query is not None and entry.get("residual") is None:
+                self.fail("RECON_RESIDUAL", where, "an invoice and a query total need a residual, which is always printed")
             if control is not None and query is not None and residual is not None and residual != control - query:
                 self.fail("RECON_RESIDUAL", where, f"residual {residual} isn't {control - query}")
+
+    def closed_flag(self, where: str, entry: dict, today: date) -> None:
+        try:
+            ended = is_closed(str(entry.get("period")), today)
+        except ValueError:
+            self.fail("STATUS_CLAIM", where, f"unreadable period {entry.get('period')!r}")
+            return
+        if ended and not entry.get("closed"):
+            self.fail("STATUS_CLAIM", where, "marked open, but the period has ended")
+        elif entry.get("closed") and not ended:
+            self.fail("STATUS_CLAIM", where, "marked closed, but the period hasn't ended")
+
+    def invoice_role(self, where: str, entry: dict) -> None:
+        """An invoice is provided by a person, or read from invoice evidence, and counts every invoice."""
+        ref = entry.get("invoice")
+        if ref is None:
+            return
+        match = _CALC_REF.match(ref) if isinstance(ref, str) else None
+        names: list = [ref]
+        if match:
+            calc = _find_calc(self.run, match.group(1))
+            terms = calc.get("inputs", {}).get("terms") if calc and calc.get("name") == "sum" else None
+            if not isinstance(terms, list) or not all(isinstance(term, str) and not _CALC_REF.match(term) for term in terms):
+                self.fail("RECON_ROLE", where, "an invoice is a figure, or a sum of invoice figures")
+                return
+            names = terms
+
+        seen: dict = {}
+        for name in names:
+            figure = self.run.get("figures", {}).get(name)
+            if figure is None:
+                self.fail("RECON_ROLE", where, f"{name} isn't an invoice figure")
+                return
+            if figure.get("kind") == "provided":
+                continue
+            evidence = self.evidence.get(figure.get("evidence"), {})
+            if figure.get("kind") != "measured" or evidence.get("role") != "invoice":
+                self.fail("RECON_ROLE", where, f"{name} wasn't read from invoice evidence, so comparing it would only compare two billing views")
+                return
+            if evidence.get("period") != entry.get("period"):
+                self.fail("RECON_ROLE", where, f"{name} is the invoice for {evidence.get('period')}")
+            if len(evidence.get("currencies", [])) > 1:
+                self.fail("RECON_ROLE", where, f"{evidence.get('id')} holds invoices in {', '.join(evidence['currencies'])}, which can't be summed")
+            path = figure.get("locator", {}).get("path", [])
+            seen.setdefault(evidence.get("id"), set()).add(tuple(path[:2]))
+        for evidence_id, invoices in seen.items():
+            rows = self.evidence[evidence_id].get("rows")
+            if rows is not None and len(invoices) != rows:
+                self.fail("RECON_ROLE", where, f"uses {len(invoices)} of the {rows} invoices in {evidence_id}")
+
+    def query_role(self, where: str, ref: object, period: object) -> None:
+        """A query total is billed cost, read from a query result, for this period."""
+        if ref is None:
+            return
+        figure = self.run.get("figures", {}).get(ref) if isinstance(ref, str) else None
+        if figure is None or figure.get("kind") != "measured":
+            self.fail("RECON_ROLE", where, f"{ref} must be a measured figure read from a query result")
+            return
+        if figure.get("basis") != "billed":
+            self.fail("RECON_ROLE", where, f"{ref} is on {figure.get('basis')} basis, and only billed cost can reconcile")
+        evidence = self.evidence.get(figure.get("evidence"), {})
+        if evidence.get("role") != "query":
+            self.fail("RECON_ROLE", where, f"{ref} wasn't read from a query result")
+            return
+        where_values = (figure.get("locator", {}).get("where") or {}).values()
+        named = [value for value in where_values if isinstance(value, str) and _PERIOD_VALUE.match(value)]
+        if period not in named if named else evidence.get("period") != period:
+            self.fail("RECON_ROLE", where, f"{ref} is for another period than {period}")
+
+    def second_view_role(self, where: str, entry: dict) -> None:
+        ref = entry.get("second_view")
+        if ref is None:
+            return
+        self.query_role(f"{where}.second_view", ref, entry.get("period"))
+        figures = self.run.get("figures", {})
+        first = figures.get(entry.get("query_total"), {}) if isinstance(entry.get("query_total"), str) else {}
+        second = figures.get(ref, {}) if isinstance(ref, str) else {}
+        if first.get("evidence") == second.get("evidence"):
+            self.fail("RECON_ROLE", where, "a second billing view must be separate evidence from the query total")
+
+    def reconciliation_currency(self, where: str, entry: dict) -> None:
+        expected = self.run["scope"].get("currency")
+        for field in ("invoice", "second_view", "query_total"):
+            ref = entry.get(field)
+            if ref is None:
+                continue
+            currency = _ref_currency(self.run, ref)
+            if currency != expected:
+                self.fail("CURRENCY_MIX", f"{where}.{field}", f"{ref} is in {currency}, and this report is in {expected}")
 
     def changes(self) -> None:
         changes = self.run.get("changes")
         if not changes:
             return
+        if changes.get("total") is None:
+            self.fail("UNRESOLVED_REF", "changes.total", "the total change is required")
         self.check_ref("changes.total", changes.get("total"))
         self.check_ref("changes.pct", changes.get("pct"))
+        self.change_source(changes)
         total = Decimal(0)
+        currencies = set()
         for index, driver in enumerate(changes.get("drivers", [])):
             where = f"changes.drivers.{index}"
             self.check_text(where, driver.get("name"))
@@ -361,6 +508,11 @@ class _Checker:
                 self.check_ref(f"{where}.{field}", driver.get(field))
             amount = _ref_number(self.run, driver.get("change"))
             total += amount if amount is not None else Decimal(0)
+            currencies.add(_ref_currency(self.run, driver.get("change")))
+            quantity = _ref_number(self.run, driver.get("quantity"))
+            rate = _ref_number(self.run, driver.get("rate"))
+            if quantity is not None and rate is not None and amount is not None and quantity + rate != amount:
+                self.fail("DRIVER_SUM", where, f"quantity {quantity} and rate {rate} don't add up to {amount}")
             cause = driver.get("cause")
             if cause is not None:
                 self.check_text(where, cause.get("text"))
@@ -368,15 +520,37 @@ class _Checker:
                     self.fail("CAUSE_NO_EVIDENCE", where, "a stated cause must cite evidence")
                 for evidence_id in cause.get("evidence", []):
                     self.check_evidence_id(where, evidence_id)
+        currencies.discard(None)
+        if len(currencies) > 1:
+            self.fail("CURRENCY_MIX", "changes.drivers", f"drivers mix {sorted(currencies)}")
         expected = _ref_number(self.run, changes.get("total"))
         if expected is not None and total != expected:
             self.fail("DRIVER_SUM", "changes.drivers", f"drivers sum to {total}, the total change is {expected}")
+
+    def change_source(self, changes: dict) -> None:
+        """The headline change compares the two periods' query totals, and nothing else."""
+        total = changes.get("total")
+        match = _CALC_REF.match(total) if isinstance(total, str) else None
+        calc = _find_calc(self.run, match.group(1)) if match else None
+        if calc is None or calc.get("name") != "change" or match.group(2) != "change":
+            self.fail("CHANGE_SOURCE", "changes.total", "the total change must be a change calculation over the query totals")
+            return
+        if changes.get("pct") != f"{calc['id']}.pct":
+            self.fail("CHANGE_SOURCE", "changes.pct", f"the percentage must come from {calc['id']}")
+        totals = {entry.get("period"): entry.get("query_total") for entry in self.run.get("reconciliation", [])}
+        scope = self.run["scope"]
+        inputs = calc.get("inputs", {})
+        if inputs.get("after") != totals.get(scope.get("period")) or inputs.get("before") != totals.get(scope.get("comparison_period")):
+            self.fail("CHANGE_SOURCE", "changes.total", "the total change must compare the comparison period's query total with this period's")
 
     def ledger(self) -> None:
         ledger = self.run.get("kubernetes_ledger")
         if not ledger:
             return
         self.check_ref("kubernetes_ledger.covered", ledger.get("covered"))
+        covered = self.run.get("figures", {}).get(ledger.get("covered"), {})
+        if covered.get("kind") not in {"measured", "provided"}:
+            self.fail("LEDGER_SUM", "kubernetes_ledger.covered", "covered charges must come from the bill, not a cost tool or a calculation")
         rows = ledger.get("rows", [])
         for index, row in enumerate(rows):
             where = f"kubernetes_ledger.rows.{index}"
@@ -417,20 +591,37 @@ class _Checker:
             if output.startswith("share_") and f"{calc.get('id')}.{output}" not in amounts:
                 self.fail("POOL_SUM", where, f"{calc.get('id')}.{output} isn't a ledger row, so part of the pool is lost")
 
+    def saving_is_an_estimate(self, ref: object) -> bool:
+        """A saving is modeled, so it's estimated or stated by a person, never read off the bill."""
+        try:
+            if resolve(self.run, ref).estimated:
+                return True
+        except RefError:
+            return True  # Reported as UNRESOLVED_REF already.
+        leaves = [item for item in self.all_refs(ref) if not _CALC_REF.match(item)]
+        figures = self.run.get("figures", {})
+        return bool(leaves) and all(figures.get(item, {}).get("kind") == "provided" for item in leaves)
+
     def opportunities(self) -> None:
-        total_terms = set()
         total_ref = self.run.get("savings_total")
         self.check_ref("savings_total", total_ref)
+        total_refs = self.all_refs(total_ref) if total_ref else set()
         match = _CALC_REF.match(total_ref) if isinstance(total_ref, str) else None
-        if match:
-            calc = _find_calc(self.run, match.group(1))
-            if calc:
-                total_terms = {term for term in calc.get("inputs", {}).get("terms", []) if isinstance(term, str)}
+        calc = _find_calc(self.run, match.group(1)) if match else None
+        if total_ref is not None and (calc is None or calc.get("name") not in SAVINGS_TOTAL_CALCS):
+            self.fail("SAVINGS_KIND", "savings_total", "the savings total must be a calculation over the opportunities")
 
         by_resource: dict = {}
         for item in self.run.get("opportunities", []):
             where = f"opportunities.{item.get('id')}"
-            self.check_ref(f"{where}.monthly", item.get("monthly"))
+            monthly = item.get("monthly")
+            self.check_ref(f"{where}.monthly", monthly)
+            if not self.saving_is_an_estimate(monthly):
+                self.fail("SAVINGS_KIND", where, "a saving is modeled, so it must be estimated or provided")
+            if item.get("type") not in OPPORTUNITY_TYPES:
+                self.fail("OPPORTUNITY_FIELD", where, f"type must be one of {sorted(OPPORTUNITY_TYPES)}")
+            if not item.get("resource"):
+                self.fail("OPPORTUNITY_FIELD", where, "resource is required, so overlapping savings can be found")
             for field in ("action", "owner"):
                 self.check_text(where, item.get(field))
             for assumption in item.get("assumes", []):
@@ -442,17 +633,17 @@ class _Checker:
 
             if item.get("type") == "rightsizing" and not item.get("needs_investigation"):
                 peak = self.evidence.get(item.get("peak_evidence"))
-                if peak is None or peak.get("kind") != "telemetry":
-                    self.fail("PEAK_MISSING", where, "rightsizing needs telemetry evidence of peak demand, or needs_investigation")
-            if item.get("needs_investigation") and item.get("monthly") in total_terms:
+                if peak is None or peak.get("kind") != "telemetry" or not peak.get("complete", False):
+                    self.fail("PEAK_MISSING", where, "rightsizing needs complete telemetry evidence of peak demand, or needs_investigation")
+            if item.get("needs_investigation") and monthly in total_refs:
                 self.fail("INVESTIGATE_IN_TOTAL", where, "an item that needs investigation can't count toward the savings total")
 
             overlap = item.get("overlap_calc")
             if overlap is not None:
-                calc = _find_calc(self.run, overlap)
-                if calc is None or calc.get("name") != "overlap_savings":
+                overlap_calc = _find_calc(self.run, overlap)
+                if overlap_calc is None or overlap_calc.get("name") != "overlap_savings":
                     self.fail("OVERLAP", where, f"{overlap} isn't an overlap_savings calculation")
-            if item.get("resource") and item.get("monthly") in total_terms:
+            if item.get("resource") and monthly in total_refs:
                 by_resource.setdefault(item["resource"], []).append(item.get("id"))
 
         for resource, ids in by_resource.items():
@@ -468,25 +659,31 @@ class _Checker:
                 self.check_text(where, item.get(field))
             result = item.get("result")
             if result is None:
+                if item.get("status") not in PAST_UNMEASURED:
+                    self.fail("PAST_STATUS", where, f"{item.get('status')!r} claims a result, and there is none")
                 continue
             match = _CALC_REF.match(result) if isinstance(result, str) else None
             calc = _find_calc(self.run, match.group(1)) if match else None
-            if calc is None or calc.get("name") != "realized_savings":
-                self.fail("PAST_RESULT_CALC", where, "a measured saving must come from a realized_savings calculation")
+            if calc is None or calc.get("name") != "realized_savings" or calc.get("kind") != "calculated":
+                self.fail("PAST_RESULT_CALC", where, "a measured saving must come from a realized_savings calculation with no assumptions")
+            elif item.get("status") != past_status(self.run, item):
+                self.fail("PAST_STATUS", where, f"the result says {past_status(self.run, item)!r}, not {item.get('status')!r}")
             data_through = self.run["scope"].get("data_through")
             try:
                 implemented = date.fromisoformat(item.get("implemented_on", ""))
             except (TypeError, ValueError):
                 self.fail("PAST_TOO_EARLY", where, f"unreadable implemented_on {item.get('implemented_on')!r}")
                 continue
-            if data_through and too_early(implemented, date.fromisoformat(data_through)):
-                self.fail("PAST_TOO_EARLY", where, "no complete billing period has passed since the change")
+            if not data_through or too_early(implemented, date.fromisoformat(data_through)):
+                self.fail("PAST_TOO_EARLY", where, "no complete billing period is known to have passed since the change")
 
     def gaps(self) -> None:
         for index, item in enumerate(self.run.get("gaps", [])):
             where = f"gaps.{index}"
             if isinstance(item, dict):
                 self.check_text(where, item.get("text"))
+                if item.get("ref") is None:
+                    self.fail("UNRESOLVED_REF", where, "a gap object needs a ref; use plain text if it has no amount")
                 self.check_ref(where, item.get("ref"))
             else:
                 self.check_text(where, item)
@@ -497,7 +694,6 @@ class _Checker:
             self.fail("STATUS_CLAIM", "status", f"claims {claimed!r}, the evidence gives {derive_status(self.run)[0]!r}")
 
     def all(self) -> list:
-        self.required()
         self.raw_results()
         self.figures()
         self.calculations()

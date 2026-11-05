@@ -9,7 +9,7 @@
     },
     {
       "id": 2,
-      "prompt": "Reconcile our October GCP invoice with the BigQuery billing export. The invoice says $355.30 before tax, and we have a lot of credits.",
+      "prompt": "Reconcile our October GCP invoice with the BigQuery billing export. The invoice says $345.30 before tax, and we have a lot of credits.",
       "expected_output": "Records the invoice with finops_record.py provided, so it's tagged P1 and labeled as provided rather than measured. Dry runs and asks for a bytes budget before running sql/gcp-invoice-total.sql, filtered on invoice.month with credits aggregated per row. Reports the residual and status, and explains that filtering by usage month or joining credits and labels would give a wrong total.",
       "files": []
     },

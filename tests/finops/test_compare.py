@@ -18,7 +18,9 @@ SCRIPT = "finops_compare.py"
 
 
 def make_run(base, day, provider="aws", scope="123456789012", period="2026-09"):
-    return init_run(base, provider=provider, billing_scope=scope, scope_kind="whole-bill", period=period, comparison_period=None, currency="USD", question="q", today=day)
+    run_dir = init_run(base, provider=provider, billing_scope=scope, scope_kind="whole-bill", period=period, comparison_period=None, currency="USD", question="q", today=day)
+    (run_dir / "report.md").write_text("report")
+    return run_dir
 
 
 def make_prior(base, query_total="48209.40"):
@@ -78,6 +80,7 @@ class FindPrevious(CompareCase):
     def test_same_day_rerun_finds_the_first_run(self):
         rerun = init_run(self.base, provider="aws", billing_scope="123456789012", scope_kind="whole-bill", period="2026-10", comparison_period=None, currency="USD", question="q", today=date(2026, 11, 5))
         self.assertEqual(rerun.name, f"{self.run_dir.name}-2")
+        (self.run_dir / "report.md").write_text("report")
         self.assertEqual(find_previous(self.base, rerun), self.run_dir)
         self.assertIsNone(find_previous(self.base, self.run_dir))
 

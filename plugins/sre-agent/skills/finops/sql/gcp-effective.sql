@@ -8,5 +8,6 @@ SELECT
 FROM `{{table}}`
 WHERE usage_start_time >= CAST('{{usage_start}}' AS TIMESTAMP)
   AND usage_start_time < CAST('{{usage_end}}' AS TIMESTAMP)
+  AND cost_type <> 'tax'
 GROUP BY usage_month, currency
 ORDER BY usage_month, currency

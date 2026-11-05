@@ -22,7 +22,9 @@ These are hypotheses to test, not findings about a particular account.
 | An API request returns an empty result | Wrong product API, auth, retention, filters, or incomplete telemetry | Product and version, HTTP and response errors, requested versus returned windows |
 | `FIGURE_MISMATCH` on a figure you just read | The value was copied wrong, or the raw result changed | The raw result at the figure's locator |
 | `LOCATOR_FAILED` on a CSV figure | The `where` matches no row or several | Add the columns that make the row unique |
-| Status is "Not reconciled" by a small amount | Tax, rounding, or a Marketplace invoice left out | Sum all invoices for the period, and compare before tax |
+| Status is "Not reconciled" by a small amount | Rounding, a Marketplace invoice left out, or an after-tax invoice figure | Sum all invoices for the period, and compare before tax |
+| `RECON_ROLE` on a figure that looks right | It came from the wrong place: another period, a calculation, or query results where an invoice belongs | The evidence entry's `role` and `period` |
+| `BUDGET:` says a query's use is unknown | An earlier query outlived its status check | Wait for it and rerun. Don't start it again by hand |
 
 [GCP schema and timing](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage),
 [AWS export processing](https://docs.aws.amazon.com/cur/latest/userguide/dataexports-processing.html),

@@ -20,28 +20,33 @@ and usage-type questions, and the report says resource-level detail isn't availa
 
 A billing period can have several invoices: AWS, Marketplace, one-time purchases, and credit
 memos. `finops_aws.py invoice` lists each one with the path to its amount. Make one figure per
-invoice, and add them with a `sum` calculation. Don't take the first one. Invoices in two
-currencies print a gap, because they can't be summed.
+invoice, and add them with a `sum` calculation. Don't take the first one: validation refuses a
+total that leaves an invoice out. Invoices in two currencies print a gap, and can't reconcile.
 
 An empty list means no invoice has been issued yet, which is common early in a month. That's a
 gap, not a zero.
 
 ## Prepared queries
 
-All are in `sql/`. Pass the table as a parameter, and read the schema first with
+All are in `sql/`. Find the table with `finops_aws.py tables`, which lists databases, or a
+database's tables with `--database`. Both it and `schema` default to the `AwsDataCatalog` catalog,
+where a Glue crawler puts them. Pass the table as a parameter, and read the schema first with
 `finops_aws.py schema`. The CUR 2.0 partition column is assumed to be `billing_period`; if the
 schema says otherwise, use `--partition-column`.
 
+Totals are before tax, because invoice figures are. `billed_cost` leaves out `Tax` line items, and
+the control total reports them in its own `tax` column.
+
 | File | Parameters | Columns | Answers |
 | :--- | :--- | :--- | :--- |
-| `sql/aws-cur2-control-total.sql` | `table`, `period` | `billing_period,currency,billed_cost` | What do we owe? |
-| `sql/aws-cur2-drivers.sql` | `table`, `period` | `billing_period,product,usage_type,currency,quantity,billed_cost` | What moved? |
+| `sql/aws-cur2-control-total.sql` | `table`, `period` | `billing_period,currency,billed_cost,tax` | What do we owe? |
+| `sql/aws-cur2-drivers.sql` | `table`, `period` | `billing_period,product,usage_type,line_item_type,currency,quantity,billed_cost` | What moved? |
 | `sql/aws-cur2-effective.sql` | `table`, `period` | `billing_period,currency,effective_cost` | What did it consume? |
 | `sql/aws-cur2-no-owner.sql` | `table`, `period`, `owner_tag` | `billing_period,currency,no_owner_cost` | What has no owner? |
 | `sql/aws-cur2-commitments.sql` | `table`, `period` | `billing_period,total_commitment,used_commitment,unused_commitment` | Is the commitment used? |
 | `sql/aws-cur2-freshness.sql` | `table`, `period` | `billing_period,max_usage_end` | How current is the data? |
-| `sql/aws-cur-legacy-control-total.sql` | `table`, `year`, `month` | `billing_period,currency,billed_cost` | Legacy CUR, `--partition-column year` |
-| `sql/aws-cur-legacy-drivers.sql` | `table`, `year`, `month` | `billing_period,product,usage_type,currency,quantity,billed_cost` | Legacy CUR, `--partition-column year` |
+| `sql/aws-cur-legacy-control-total.sql` | `table`, `year`, `month` | `billing_period,currency,billed_cost,tax` | Legacy CUR, `--partition-column year` |
+| `sql/aws-cur-legacy-drivers.sql` | `table`, `year`, `month` | `billing_period,product,usage_type,line_item_type,currency,quantity,billed_cost` | Legacy CUR, `--partition-column year` |
 
 Ad hoc queries are allowed under the same guard: one read-only statement, named columns, and a
 partition filter.
@@ -57,7 +62,8 @@ scripts/finops_aws.py athena <run_dir> --workgroup finops --database billing \
 - **Athena:** the docs checked describe no dry run. The per-query limit is a workgroup setting
   that cancels the query, and cancelled queries are still charged. After each query the script
   reads the scanned bytes, and it refuses the next query once the budget is used up. Without a
-  workgroup limit, one query can overshoot.
+  workgroup limit, one query can overshoot. If a query's status is lost, or it outlives the wait, it
+  stays pending: the next query checks it first and charges it, and won't start until it finishes.
 - **Cost Explorer:** each request costs $0.01, and the script counts every page. Hourly
   granularity isn't offered, because it has its own charge. A budget stop with a page pending
   marks the evidence incomplete, and incomplete evidence can't back a figure.
@@ -79,6 +85,8 @@ scripts/finops_aws.py athena <run_dir> --workgroup finops --database billing \
   reservation-heavy accounts.
 - **Split cost allocation rows aren't a second bill.** They divide a parent instance's cost
   between containers. [Split cost allocation](https://docs.aws.amazon.com/cur/latest/userguide/split-cost-allocation-data.html)
+- **Credits and fees are separate.** Keep `line_item_type` when splitting a change, or a credit reads
+  as a lower rate for the usage beside it.
 - **Delivery is delayed.** Exports refresh at least daily, so a quiet latest day proves nothing.
   [Export timing](https://docs.aws.amazon.com/cur/latest/userguide/dataexports-create.html)
 

@@ -15,12 +15,25 @@ import sys
 import uuid
 from pathlib import Path
 
-from finops_guard import BudgetError, GuardError, check_bounded, check_read_only, load_query, record_use, require_budget, strip_leading_comments
-from finops_record import RecordError, add_evidence, add_gap, emit_external, failure_reason, gap, load_run, parse_params, run_cli, show_result
+from finops_guard import (
+    BudgetError,
+    GuardError,
+    add_pending,
+    check_bounded,
+    check_read_only,
+    clear_pending,
+    load_query,
+    pending_queries,
+    record_use,
+    require_budget,
+    strip_leading_comments,
+)
+from finops_record import RecordError, add_evidence, add_gap, emit_external, empty_result_gap, failure_reason, gap, load_run, parse_params, run_cli, show_result
 from finops_report import fmt_bytes
 
 EXIT_USAGE = 2
 EXIT_BUDGET = 3
+TIMED_OUT = 124
 # bq returns only 100 rows by default, which would silently undercount a bill.
 MAX_ROWS = 1000000
 MONITORING_URL = "https://monitoring.googleapis.com/v3/projects/{project}/timeSeries"
@@ -116,8 +129,32 @@ def _job_statistics(args, job_id: str, estimate: int) -> tuple:
         return estimate, None
 
 
+def _settle_pending(args) -> str | None:
+    """Charges jobs an earlier call lost track of. Returns why a new one can't start."""
+    for item in pending_queries(args.run_dir, "bigquery"):
+        job = item["job_id"]
+        code, out, _ = run_cli(_bq(args, "--format=json") + ["show", "-j", job])
+        try:
+            if code:
+                raise ValueError(job)
+            body = json.loads(out)
+            if body.get("status", {}).get("state") != "DONE":
+                return f"BigQuery job {job} is still running, so its use is unknown. Try again when it finishes"
+            billed = int(body["statistics"]["query"].get("totalBytesBilled", 0))
+        except (ValueError, KeyError, TypeError):
+            # It may never have started, but counting too much is the safe side of a budget.
+            billed = int(item.get("estimate", 0))
+            add_gap(args.run_dir, f"couldn't read BigQuery job {job}, so the budget records its dry-run estimate")
+        record_use(args.run_dir, "bigquery_bytes", billed)
+        clear_pending(args.run_dir, job)
+    return None
+
+
 def cmd_query(args) -> int:
     sql = _prepared(args)
+    unsettled = _settle_pending(args)
+    if unsettled:
+        return _budget_stop(unsettled)
     try:
         remaining = require_budget(load_run(args.run_dir), "bigquery_bytes", 1)
     except BudgetError as exc:
@@ -132,7 +169,12 @@ def cmd_query(args) -> int:
     job_id = f"finops-{uuid.uuid4().hex}"
     flags = ["--format=csv", f"--job_id={job_id}"]
     query_flags = ["--use_legacy_sql=false", f"--maximum_bytes_billed={remaining}", f"--max_rows={MAX_ROWS}"]
+    add_pending(args.run_dir, "bigquery", job_id, estimate)
     code, out, err = run_cli(_bq(args, *flags) + ["query", *query_flags, strip_leading_comments(sql)])
+    if code == TIMED_OUT:
+        gap(f"BigQuery job {job_id} timed out here and may still be running. Its use isn't counted yet, and the next query checks it first. Don't start it again", args.run_dir)
+        return 0
+    clear_pending(args.run_dir, job_id)
     if code:
         details = f"{err}\n{out}"
         if _BYTES_LIMIT.search(details):
@@ -145,8 +187,10 @@ def cmd_query(args) -> int:
     if reservation:
         add_gap(args.run_dir, "this project uses capacity pricing, so bytes billed have no direct dollar meaning")
 
-    rows = max(len(list(csv.reader(io.StringIO(out)))) - 1, 0)
+    table = list(csv.reader(io.StringIO(out)))
+    rows = max(len(table) - 1, 0)
     truncated = rows >= MAX_ROWS
+    params = parse_params(args.param)
     evidence_id = add_evidence(
         args.run_dir,
         kind="billing",
@@ -161,12 +205,14 @@ def cmd_query(args) -> int:
         basis=args.basis,
         complete=not truncated,
         rows=rows,
+        role="query",
+        period=params.get("invoice_month", ""),
     )
     show_result(args.run_dir, evidence_id, args.query_file.name, out)
     if truncated:
         gap(f"{args.query_file.name} reached {MAX_ROWS} rows and may be truncated, so it can't back a figure", args.run_dir)
-    elif rows == 0:
-        gap("query returned no rows", args.run_dir)
+    else:
+        empty_result_gap(", ".join(filter(None, [args.query_file.name, params.get("invoice_month", "")])), table or [[]], args.run_dir)
 
     try:
         require_budget(load_run(args.run_dir), "bigquery_bytes", 0)

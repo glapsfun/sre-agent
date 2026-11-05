@@ -26,9 +26,12 @@ All are in `sql/`. Read the schema first with `finops_gcp.py schema`, and run th
 `finops_gcp.py query`. `table` is the full export table, such as
 `proj.billing.gcp_billing_export_v1_0123AB`.
 
+Totals are before tax, because the invoice figure you ask for is. They leave out rows with `cost_type`
+of `tax`, and the invoice total reports those in its own `tax` column.
+
 | File | Parameters | Columns | Answers |
 | :--- | :--- | :--- | :--- |
-| `sql/gcp-invoice-total.sql` | `table`, `invoice_month` | `invoice_month,currency,cost,credits,net_cost` | What do we owe? |
+| `sql/gcp-invoice-total.sql` | `table`, `invoice_month` | `invoice_month,currency,cost,credits,net_cost,tax` | What do we owe? |
 | `sql/gcp-drivers.sql` | `table`, `invoice_month` | `invoice_month,service,sku,location,currency,usage_amount,usage_unit,cost,credits,net_cost` | What moved? |
 | `sql/gcp-effective.sql` | `table`, `usage_start`, `usage_end` | `usage_month,currency,effective_cost` | What did it consume? |
 | `sql/gcp-no-owner.sql` | `table`, `invoice_month`, `owner_label` | `invoice_month,currency,no_owner_cost` | What has no owner? |
@@ -57,7 +60,8 @@ A `LIMIT` doesn't reduce a scan on a non-clustered table. The prepared queries f
 `invoice.month`, which doesn't prune partitions, so check the dry-run bytes on large exports.
 
 On capacity pricing, the bytes limit has no direct dollar meaning, and the script records a gap
-saying so.
+saying so. If `bq` times out here, the job may still be running: it stays pending, and the next query
+checks it first and charges it, or charges the estimate if the job can't be read.
 
 [BigQuery cost controls](https://docs.cloud.google.com/bigquery/docs/best-practices-costs)
 
@@ -71,8 +75,8 @@ saying so.
   silently omits charges.
 - **Floats.** `cost` and `credits.amount` are floats. The prepared queries cast to `NUMERIC` before
   summing, as Google's examples do.
-- **Keep the odd rows visible.** Tax, adjustments, rounding, commitment fees, and charges with no
-  project all count toward the invoice.
+- **Keep the odd rows visible.** Adjustments, rounding, commitment fees, and charges with no project all
+  count toward the invoice total. Tax has its own column.
 - **CUD programs differ.** Newer spend-based programs use discounted prices and fee offsets where
   older ones used list prices and credits. Establish the program and migration date, and compare net
   cost: less credit volume is not lost savings. Check the fee SKU names and credit types in

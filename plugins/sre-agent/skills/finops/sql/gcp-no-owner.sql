@@ -6,6 +6,7 @@ SELECT
   SUM(CAST(cost AS NUMERIC) + COALESCE((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) AS c), 0)) AS no_owner_cost
 FROM `{{table}}`
 WHERE invoice.month = '{{invoice_month}}'
+  AND cost_type <> 'tax'
   AND NOT EXISTS (SELECT 1 FROM UNNEST(labels) AS l WHERE l.key = '{{owner_label}}' AND l.value <> '')
 GROUP BY invoice_month, currency
 ORDER BY currency

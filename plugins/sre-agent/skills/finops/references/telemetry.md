@@ -24,6 +24,10 @@ scripts/finops_capture.py <run_dir> --source "orders-api deploy history" --kind 
 scripts/finops_capture.py <run_dir> --source "orders-api commits" --kind change -- git log --since=2026-10-01 --oneline
 ```
 
+Don't capture pod specs with `describe` or `-o yaml`: they can hold literal environment values, and evidence is saved to
+disk. Metrics and rollout history are what a cost question needs. CloudWatch metric calls can carry small charges of their
+own, outside the query budget, so keep them few.
+
 Also allowed: `kubectl get`, `describe`, and `top`; `git show`; `helm history`; `flux get`; `argocd app history`; `gh pr list`,
 `pr view`, `run list`, and `run view`; `aws cloudwatch get-metric-data`; `aws cloudtrail lookup-events`; `gcloud logging read`.
 
@@ -33,7 +37,7 @@ On GCP, use `scripts/finops_gcp.py monitoring` for Cloud Monitoring.
 
 | Evidence kind | Can back a figure? | Can support a cause? | Can prove a peak? |
 | :--- | :--- | :--- | :--- |
-| `telemetry` | Yes, as measured, such as a usage count | Yes | Yes |
+| `telemetry` | Yes, as measured, for a usage count. Never money | Yes | Yes, if complete |
 | `change` | No | Yes | No |
 | `reported` | No | Yes, and the report names who reported it | No |
 

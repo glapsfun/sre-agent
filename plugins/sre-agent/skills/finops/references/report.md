@@ -11,6 +11,8 @@ docs/finops/<YYYY-MM-DD>-<provider>-<scope>-<period>/
 
 `run.json` is the source of truth. Scripts write `scope`, `budget`, `evidence`, and `provided`. You write
 everything else with `scripts/finops_record.py merge <run_dir> <fragment.json>`, which refuses those four sections.
+Merging adds or replaces. To take something back, use `scripts/finops_record.py remove <run_dir> <section> [key]`,
+where the key is a figure or entry ID, a period, or a gap's text.
 
 ## References
 
@@ -45,8 +47,8 @@ Sections hold references, never numbers:
 
 **`calculations`**: see `calculations.md`.
 
-**`reconciliation`**, one entry per period. `closed`, `invoice`, `query_total`, and `residual` drive the status. The
-others are optional rows.
+**`reconciliation`**, one entry per period, for both the period and the comparison period. `closed`, `invoice`,
+`query_total`, and `residual` drive the status. The others are optional rows. `assurance.md` says what each may hold.
 
 ```json
 {
@@ -61,8 +63,8 @@ others are optional rows.
 }
 ```
 
-Total change comes from query totals, not invoices, so drivers can sum to it exactly. End drivers with an `Other` row,
-from a `residual` of the total change against the drivers' `sum`.
+Total change is a `change` calculation over the two periods' `query_total` figures, not invoices, so drivers can sum to
+it exactly. End drivers with an `Other` row, from a `residual` of the total change against the drivers' `sum`.
 
 **`changes`**:
 
@@ -82,7 +84,9 @@ from a `residual` of the total change against the drivers' `sum`.
 A driver with `cause: null` prints "Not established".
 
 **`opportunities`** and **`savings_total`**. Keep IDs stable across runs: `finops_compare.py carry` prints the next free
-one. Summing two opportunities on one resource needs an `overlap_savings` calculation in the total instead.
+one, and a still-open opportunity has to be listed again to stay tracked. `type` is `rightsizing` or `other`, and `resource`
+is required. A saving is estimated or provided, never measured. Summing two opportunities on one resource needs an
+`overlap_savings` calculation in the total instead.
 
 ```json
 {
@@ -97,10 +101,11 @@ one. Summing two opportunities on one resource needs an `overlap_savings` calcul
 ```
 
 **`past_savings`** comes from `finops_compare.py mark`. Once a period can be measured, add a `realized_savings` calculation
-and set `result` and `status`. `avoidance` is optional, for growth-related cost avoidance, and stays separate from measured
-savings.
+with no assumptions and set `result` and `status`. The status must match the result: `Landed`, `Landed, below estimate`, or
+`Did not land`. With no result it's `too early to measure`, `not yet measured`, `approved, not implemented`, `rejected`, or
+`cannot measure`. `avoidance` is optional, for growth-related cost avoidance, and stays separate from measured savings.
 
-**`gaps`**: plain strings, or `{"text": "...", "ref": "C13.change"}` for one with an amount.
+**`gaps`**: plain strings, or `{"text": "...", "ref": "C13.change"}` for one with an amount. Scripts add theirs automatically.
 
 **`kubernetes_ledger`**: see `kubernetes-cost.md`.
 

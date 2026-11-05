@@ -15,5 +15,6 @@ SELECT
     + SUM(COALESCE((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) AS c), 0)) AS net_cost
 FROM `{{table}}`
 WHERE invoice.month = '{{invoice_month}}'
+  AND cost_type <> 'tax'
 GROUP BY invoice.month, service.description, sku.description, location.location, currency, usage.pricing_unit
 ORDER BY net_cost DESC

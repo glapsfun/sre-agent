@@ -166,11 +166,11 @@ def build_valid_run(tmp: Path) -> Path:
         return json.dumps({"InvoiceSummaries": [{"BaseCurrencyAmount": {"TotalAmountBeforeTax": amount, "CurrencyCode": "USD"}}]}).encode()
 
     e3 = "billing_period,item,amount,currency\n" + "".join(",".join(row) + "\n" for row in E3_ROWS)
-    prior = {"figures": {"o12_saving": {"value": "900.00"}}}
+    prior = {"figures": {"o12_saving": {"value": "900.00", "currency": "USD"}}}
     hub = '{"items": [{"resourceId": "search-pool", "estimatedMonthlySavings": 1900.00, "currencyCode": "USD"}]}'
-    add_evidence(run_dir, kind="billing", source="AWS Invoicing, October", command="aws invoicing list-invoice-summaries --filter BillingPeriod={Month=10,Year=2026}", raw=invoice_json("56940.00"), ext="json", used="1 call", basis="billed", currency="USD")
-    add_evidence(run_dir, kind="billing", source="AWS Invoicing, September", command="aws invoicing list-invoice-summaries --filter BillingPeriod={Month=9,Year=2026}", raw=invoice_json("48210.00"), ext="json", used="1 call", basis="billed", currency="USD")
-    add_evidence(run_dir, kind="billing", source="Athena, CUR 2.0", command="aws athena start-query-execution", raw=e3.encode(), ext="csv", query_text="SELECT billing_period, item, amount, currency FROM cur WHERE billing_period IN ('2026-09', '2026-10')", job_id="a1b2c3", used="2.1 GB", basis="billed", currency="USD", rows=len(E3_ROWS))
+    add_evidence(run_dir, kind="billing", source="AWS Invoicing, October", command="aws invoicing list-invoice-summaries --filter BillingPeriod={Month=10,Year=2026}", raw=invoice_json("56940.00"), ext="json", used="1 call", basis="billed", currency="USD", role="invoice", period="2026-10", rows=1, currencies=["USD"])
+    add_evidence(run_dir, kind="billing", source="AWS Invoicing, September", command="aws invoicing list-invoice-summaries --filter BillingPeriod={Month=9,Year=2026}", raw=invoice_json("48210.00"), ext="json", used="1 call", basis="billed", currency="USD", role="invoice", period="2026-09", rows=1, currencies=["USD"])
+    add_evidence(run_dir, kind="billing", source="Athena, CUR 2.0", command="aws athena start-query-execution", raw=e3.encode(), ext="csv", query_text="SELECT billing_period, item, amount, currency FROM cur WHERE billing_period IN ('2026-09', '2026-10')", job_id="a1b2c3", used="2.1 GB", basis="billed", currency="USD", rows=len(E3_ROWS), role="query")
     add_evidence(run_dir, kind="telemetry", source="CloudWatch NAT bytes", command="aws cloudwatch get-metric-statistics", raw=b'{"Datapoints": []}', ext="json", used="1 call")
     add_evidence(run_dir, kind="change", source="orders-api deploy history", command="kubectl rollout history deploy/orders-api", raw=b"REVISION 14: orders-api v2.14\n", ext="txt")
     add_evidence(run_dir, kind="telemetry", source="Prometheus search pool peak", command="kubectl get --raw /api/v1/query", raw=b'{"peak": "0.41"}', ext="json")

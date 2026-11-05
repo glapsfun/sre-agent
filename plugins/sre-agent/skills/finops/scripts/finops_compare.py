@@ -58,10 +58,15 @@ def find_previous(base_dir: Path, run_dir: Path) -> Path | None:
     if not base.is_dir() or not current:
         return None
     key = (current.group(1), run_dir.name)
+    # Only a run that got as far as a report counts. An aborted one says nothing.
     earlier = [
         item
         for item in base.iterdir()
-        if item.is_dir() and item.name != run_dir.name and _same_scope(item, scope["provider"], scope["billing_scope"]) and (_RUN_NAME.match(item.name).group(1), item.name) < key
+        if item.is_dir()
+        and item.name != run_dir.name
+        and (item / "report.md").is_file()
+        and _same_scope(item, scope["provider"], scope["billing_scope"])
+        and (_RUN_NAME.match(item.name).group(1), item.name) < key
     ]
     if not earlier:
         return None
@@ -98,6 +103,29 @@ def _next_id(prior: dict) -> str:
     return f"O-{max(numbers) + 1}"
 
 
+def _carried_items(prior: dict) -> tuple:
+    """Estimate figures and display lines for everything still being tracked."""
+    figures = {}
+    lines = []
+    for item in prior.get("opportunities", []):
+        ref = item.get("monthly")
+        if not ref:
+            continue
+        figures[f"prior_{item['id']}_estimate"] = _prior_figure(prior, ref, "", "avoidable")
+        lines.append(f"OPPORTUNITY {item['id']} state={item.get('state', 'identified')} {item.get('action', '')}")
+    # Anything not yet measured or rejected stays tracked until it can be settled.
+    for item in prior.get("past_savings", []):
+        if item.get("result") is not None or item.get("state") == "rejected" or item.get("status") == "rejected":
+            continue
+        figures[f"prior_{item['id']}_estimate"] = _prior_figure(prior, item["estimated"], "", "avoidable")
+        if item.get("implemented_on"):
+            state = item.get("state", "implemented")
+            lines.append(f"OPPORTUNITY {item['id']} state={state} implemented_on={item['implemented_on']} {item.get('action', '')}")
+        else:
+            lines.append(f"OPPORTUNITY {item['id']} state={item.get('state', 'approved')} {item.get('action', '')}")
+    return figures, lines
+
+
 def cmd_carry(args) -> int:
     previous = find_previous(args.base, args.run_dir)
     if previous is None:
@@ -109,6 +137,12 @@ def cmd_carry(args) -> int:
         gap(f"the last report's record at {previous.name} can't be read, so the comparison is skipped", args.run_dir)
         return 0
 
+    try:
+        figures, lines = _carried_items(prior)
+    except (RefError, KeyError, TypeError, AttributeError, StopIteration):
+        gap(f"the last report's record at {previous.name} is malformed, so the comparison is skipped", args.run_dir)
+        return 0
+
     evidence_id = add_evidence(
         args.run_dir,
         kind="prior_run",
@@ -117,19 +151,8 @@ def cmd_carry(args) -> int:
         raw=(previous / "run.json").read_bytes(),
         ext="json",
     )
-    figures = {}
-    lines = []
-    for item in prior.get("opportunities", []):
-        ref = item.get("monthly")
-        if not ref:
-            continue
-        figures[f"prior_{item['id']}_estimate"] = _prior_figure(prior, ref, evidence_id, "avoidable")
-        lines.append(f"OPPORTUNITY {item['id']} state={item.get('state', 'identified')} {item.get('action', '')}")
-    # A saving that was too early to measure last time stays tracked until it can be.
-    for item in prior.get("past_savings", []):
-        if item.get("result") is None and item.get("implemented_on"):
-            figures[f"prior_{item['id']}_estimate"] = _prior_figure(prior, item["estimated"], evidence_id, "avoidable")
-            lines.append(f"OPPORTUNITY {item['id']} state=implemented implemented_on={item['implemented_on']} {item.get('action', '')}")
+    for figure in figures.values():
+        figure["evidence"] = evidence_id
 
     merge(args.run_dir, {"figures": figures})
     update_scope(args.run_dir, last_report=str(previous / "report.md"))
@@ -163,17 +186,18 @@ def cmd_mark(args) -> int:
     known = [*(prior or {}).get("opportunities", []), *(prior or {}).get("past_savings", [])]
     action = next((item.get("action", "") for item in known if item.get("id") == args.id), "")
 
-    entry = {"id": args.id, "action": action, "estimated": estimated, "implemented_on": args.on, "result": None, "avoidance": None}
+    entry = {"id": args.id, "action": action, "state": args.state, "estimated": estimated, "implemented_on": args.on, "result": None, "avoidance": None}
     if args.state == "rejected":
         entry["status"] = "rejected"
     elif args.state == "approved":
         entry["status"] = "approved, not implemented"
     else:
         data_through = run["scope"].get("data_through")
-        if not data_through:
-            raise RecordError("set data_through first: finops_record.py set-scope")
         implemented = date.fromisoformat(args.on)
-        if too_early(implemented, date.fromisoformat(data_through)):
+        if not data_through:
+            entry["status"] = STATUS_TOO_EARLY
+            print("NOTE the data-through date isn't set yet. Mark this again once it is, in case the saving can be measured")
+        elif too_early(implemented, date.fromisoformat(data_through)):
             entry["status"] = STATUS_TOO_EARLY
         else:
             entry["status"] = STATUS_UNMEASURED

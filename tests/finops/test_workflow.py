@@ -384,16 +384,18 @@ class Comparison(Flow):
             opportunities=[{"id": "O-12", "action": "gp3 migration", "owner": "platform", "resource": "ebs", "type": "other", "monthly": "o12", "assumes": ["Owner estimate"], "reliability": {"text": "No capacity change", "evidence": []}, "peak_evidence": None, "state": "identified", "needs_investigation": False, "overlap_calc": None}],
         )
         self.set_data_through(f"{period}-28")
+        self.report()
         return self.run_dir
 
     def test_second_run_compares(self):
         first = self.first_run("2026-09", "2026-08", date(2026, 10, 5))
+        # In SKILL.md's order: carry and ask in step 2, then query, then mark once the date is known.
         self.new_run(period="2026-10", comparison="2026-09", day=date(2026, 11, 5))
-        self.approve()
-        self.set_data_through()
         carried = self.script("finops_compare.py", "carry", self.run_dir, "--base", self.base)
         self.assertRegex(carried.stdout, r"(?m)^OPPORTUNITY O-12 state=identified gp3 migration$")
         self.assertRegex(carried.stdout, r"(?m)^NEXT_ID O-13$")
+        self.approve()
+        self.set_data_through()
         self.script("finops_compare.py", "mark", self.run_dir, "--id", "O-12", "--state", "implemented", "--on", "2026-10-15")
 
         e1 = self.control_total("2026-10", "56938.72")

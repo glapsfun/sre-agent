@@ -316,9 +316,6 @@ class PastSavings(ValidateCase):
 
 
 class Fields(ValidateCase):
-    def test_data_through_is_required(self):
-        self.assert_fails("MISSING_FIELD", lambda run: run["scope"].update(data_through=None))
-
     def test_data_through_is_not_needed_when_nothing_was_measured(self):
         def change(run):
             run["scope"]["data_through"] = None

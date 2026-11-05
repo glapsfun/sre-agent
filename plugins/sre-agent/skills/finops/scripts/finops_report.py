@@ -13,13 +13,16 @@ import os
 import re
 import sys
 import tempfile
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 from finops_calc import UNDEFINED, display_number, fill_formula
 from finops_record import RecordError, load_run, sanitize
 from finops_validate import (
     STATUS_RECONCILED,
+    RefError,
+    _input_items,
+    _is_literal,
     Resolved,
     derive_status,
     input_values,
@@ -153,6 +156,10 @@ class _Report:
             parts.append(f"BigQuery {fmt_bytes(used['bigquery_bytes'])} of {fmt_bytes(limits['bigquery_bytes'])} approved")
         if limits["ce_requests"] or used["ce_requests"]:
             parts.append(f"Cost Explorer {used['ce_requests']} of {limits['ce_requests']} requests")
+        pending = [item.get("job_id", "") for item in self.run["budget"].get("pending", [])]
+        if pending:
+            noun = "query whose use isn't" if len(pending) == 1 else "queries whose use isn't"
+            parts.append(f"{len(pending)} {noun} known yet ({cell(', '.join(pending))})")
         return f"{', '.join(parts)}." if parts else "none."
 
     def reconciliation(self) -> list:
@@ -235,6 +242,8 @@ class _Report:
                 lines.append(f"- {cell(item.get('text', ''))}: {amount} [{found.tag}]")
             else:
                 lines.append(f"- {cell(item)}")
+        if self.run.get("figures") and not self.scope.get("data_through"):
+            lines.append("- The data-through date isn't known, so recent days may be incomplete.")
         if self.ledger_unreconciled():
             lines.append(f"- The Kubernetes ledger residual is above {cell(self.scope['ledger_tolerance_pct'])}% of covered charges, so workload figures aren't reconciled.")
         return ["## Gaps", "", *lines] if lines else []
@@ -288,7 +297,8 @@ class _Report:
         for calc in calculations:
             tag = f"{calc['id']} est" if calc.get("kind") == "estimated" else calc["id"]
             formula = fill_formula(calc["name"], input_values(self.run, calc))
-            assumptions = list(calc.get("assumptions", []))
+            literals = [item.get("assumption", "") for item in _input_items(calc) if _is_literal(item)]
+            assumptions = dict.fromkeys([*calc.get("assumptions", []), *literals])
             rows.append([tag, cell(formula), self.calc_result(calc), cell("; ".join(assumptions))])
         return ["## Calculations", "", *_table(["ID", "Formula", "Result", "Assumes"], [_LEFT] * 4, rows)]
 
@@ -310,7 +320,7 @@ class _Report:
         rows = []
         for driver in changes.get("drivers", []):
             cause = driver.get("cause") or {}
-            sources = [self.tag(driver.get("change")), *cause.get("evidence", [])]
+            sources = [self.tag(driver.get("change")), self.tag(driver.get("quantity")), self.tag(driver.get("rate")), *cause.get("evidence", [])]
             rows.append(
                 [
                     cell(driver.get("name", "")),
@@ -411,10 +421,10 @@ def main(argv: list | None = None) -> int:
     args = parser.parse_args(argv)
     path = args.run_dir / "report.md"
 
+    # A report left over from an earlier pass would look proved when it isn't.
+    path.unlink(missing_ok=True)
     failures = validate(args.run_dir)
     if failures:
-        # A report left over from an earlier pass would look proved when it isn't.
-        path.unlink(missing_ok=True)
         print_failures(failures)
         return 1
     try:
@@ -422,7 +432,12 @@ def main(argv: list | None = None) -> int:
     except RecordError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    _write_atomically(path, render(run))
+    try:
+        text = render(run)
+    except (AttributeError, KeyError, TypeError, ValueError, InvalidOperation, RefError) as exc:
+        print(f"FAIL RENDER_FAILED run.json: the record validated but couldn't be rendered: {exc!r}")
+        return 1
+    _write_atomically(path, text)
     print(f"REPORT {path}")
     print(f"STATUS {derive_status(run)[0]}")
     return 0

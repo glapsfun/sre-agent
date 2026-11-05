@@ -19,5 +19,6 @@ SELECT
   )) AS effective_cost
 FROM {{table}}
 WHERE billing_period = '{{period}}'
+  AND line_item_line_item_type <> 'Tax'
 GROUP BY billing_period, line_item_currency_code
 ORDER BY currency

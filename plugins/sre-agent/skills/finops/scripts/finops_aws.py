@@ -16,11 +16,24 @@ import sys
 import time
 from pathlib import Path
 
-from finops_guard import BudgetError, GuardError, check_bounded, check_read_only, load_query, record_use, require_budget, strip_leading_comments
-from finops_record import RecordError, add_evidence, emit_external, failure_reason, gap, load_run, parse_params, run_cli, show_result
+from finops_guard import (
+    BudgetError,
+    GuardError,
+    add_pending,
+    check_bounded,
+    check_read_only,
+    clear_pending,
+    load_query,
+    pending_queries,
+    record_use,
+    require_budget,
+    strip_leading_comments,
+)
+from finops_record import RecordError, add_evidence, emit_external, empty_result_gap, failure_reason, gap, load_run, parse_params, run_cli, show_result
 from finops_report import fmt_bytes
 
 BILLING_REGION = "us-east-1"
+DEFAULT_CATALOG = "AwsDataCatalog"
 EXIT_USAGE = 2
 EXIT_BUDGET = 3
 RESULT_PAGE_ITEMS = "1000"
@@ -63,12 +76,30 @@ def _aws(args, *command: str, region: str | None = None) -> list:
     return argv + ["--output", "json"]
 
 
+def _month_of(start: str, end: str) -> str:
+    """The billing period a date range covers exactly, or nothing if it isn't one month."""
+    year, month = int(start[:4]), int(start[5:7])
+    following = f"{year + (month == 12):04d}-{month % 12 + 1:02d}-01"
+    return start[:7] if start.endswith("-01") and end == following else ""
+
+
+def _query_period(params: dict) -> str:
+    if params.get("period"):
+        return params["period"]
+    if params.get("year") and params.get("month", "").isdigit():
+        return f"{params['year']}-{int(params['month']):02d}"
+    return ""
+
+
 def _budget_stop(message: object) -> int:
     print(f"BUDGET: {message}")
     return EXIT_BUDGET
 
 
 def cmd_invoice(args) -> int:
+    scope = load_run(args.run_dir)["scope"]
+    if scope.get("scope_kind") == "whole-bill" and args.account != scope.get("billing_scope"):
+        raise RecordError(f"this run covers {scope.get('billing_scope')}, so {args.account}'s invoices can't reconcile it")
     year, month = args.period.split("-")
     label = "aws invoicing list-invoice-summaries"
     argv = _aws(
@@ -86,7 +117,9 @@ def cmd_invoice(args) -> int:
         gap(failure_reason(label, code, err), args.run_dir)
         return 0
 
-    summaries = json.loads(out).get("InvoiceSummaries", [])
+    body = json.loads(out)
+    summaries = body.get("InvoiceSummaries", [])
+    complete = not body.get("NextToken")
     currencies = sorted({item.get("BaseCurrencyAmount", {}).get("CurrencyCode", "") for item in summaries} - {""})
     evidence_id = add_evidence(
         args.run_dir,
@@ -100,6 +133,10 @@ def cmd_invoice(args) -> int:
         basis="billed",
         currency=currencies[0] if len(currencies) == 1 else "",
         rows=len(summaries),
+        complete=complete,
+        role="invoice",
+        period=args.period,
+        currencies=currencies,
     )
     lines = []
     for index, item in enumerate(summaries):
@@ -108,6 +145,8 @@ def cmd_invoice(args) -> int:
         path = ["InvoiceSummaries", index, "BaseCurrencyAmount", "TotalAmountBeforeTax"]
         lines.append(f"INVOICE {index} {entity} {item.get('BillType', '')} {amount.get('TotalAmountBeforeTax', '')} {amount.get('CurrencyCode', '')} path={json.dumps(path)}")
     show_result(args.run_dir, evidence_id, f"invoices for {args.period}", "\n".join(lines))
+    if not complete:
+        gap(f"invoices for {args.period}: the list is incomplete, so it can't back a figure", args.run_dir)
     if not summaries:
         gap(f"no invoice issued yet for {args.period}", args.run_dir)
     elif len(currencies) > 1:
@@ -126,6 +165,26 @@ def cmd_workgroup(args) -> int:
     location = configuration.get("ResultConfiguration", {}).get("OutputLocation", "not set")
     lines = [f"LIMIT {limit}" if limit else "NO LIMIT: one query can overshoot the budget", f"OUTPUT {location}: query results get written here"]
     emit_external(f"workgroup {args.workgroup}", "\n".join(lines))
+    return 0
+
+
+def cmd_tables(args) -> int:
+    if args.database:
+        label = f"tables in {args.database}"
+        argv = _aws(args, "athena", "list-table-metadata", "--catalog-name", args.catalog, "--database-name", args.database)
+    else:
+        label = f"databases in {args.catalog}"
+        argv = _aws(args, "athena", "list-databases", "--catalog-name", args.catalog)
+    code, out, err = run_cli(argv)
+    if code:
+        gap(failure_reason(f"aws athena {label}", code, err), args.run_dir)
+        return 0
+    body = json.loads(out)
+    if args.database:
+        lines = [f"TABLE {item.get('Name')}" for item in body.get("TableMetadataList", [])]
+    else:
+        lines = [f"DATABASE {item.get('Name')}" for item in body.get("DatabaseList", [])]
+    emit_external(label, "\n".join(lines))
     return 0
 
 
@@ -150,14 +209,14 @@ def _wait_for_query(args, query_id: str) -> dict | None:
     while True:
         code, out, err = run_cli(_aws(args, "athena", "get-query-execution", "--query-execution-id", query_id))
         if code:
-            gap(failure_reason(f"aws athena get-query-execution {query_id}", code, err), args.run_dir)
+            gap(f"Athena query {query_id} started, but its status couldn't be read. Its use isn't counted yet, and the next query checks it first. Don't start it again", args.run_dir)
             return None
         execution = json.loads(out).get("QueryExecution", {})
         state = execution.get("Status", {}).get("State", "")
         if state in TERMINAL_STATES:
             return execution
         if time.monotonic() >= deadline:
-            gap(f"Athena query {query_id} is still {state} after {limit:g} seconds. Check it and its cost in the console", args.run_dir)
+            gap(f"Athena query {query_id} is still {state} after {limit:g} seconds. Its use isn't counted yet, and the next query checks it first. Don't start it again", args.run_dir)
             return None
         time.sleep(poll)
 
@@ -188,10 +247,30 @@ def _to_csv(rows: list) -> str:
     return buffer.getvalue()
 
 
+def _settle_pending(args) -> str | None:
+    """Charges queries an earlier call lost track of. Returns why a new one can't start."""
+    for item in pending_queries(args.run_dir, "athena"):
+        job = item["job_id"]
+        code, out, _ = run_cli(_aws(args, "athena", "get-query-execution", "--query-execution-id", job))
+        if code:
+            return f"Athena query {job} can't be checked, so its use is unknown. Try again once it can be"
+        execution = json.loads(out).get("QueryExecution", {})
+        state = execution.get("Status", {}).get("State", "")
+        if state not in TERMINAL_STATES:
+            return f"Athena query {job} is still {state}, so its use is unknown. Try again when it finishes"
+        record_use(args.run_dir, "athena_bytes", int(execution.get("Statistics", {}).get("DataScannedInBytes", 0)))
+        clear_pending(args.run_dir, job)
+    return None
+
+
 def cmd_athena(args) -> int:
-    sql = load_query(args.query_file, parse_params(args.param))
+    params = parse_params(args.param)
+    sql = load_query(args.query_file, params)
     check_read_only(sql)
     check_bounded(sql, args.partition_column)
+    unsettled = _settle_pending(args)
+    if unsettled:
+        return _budget_stop(unsettled)
     run = load_run(args.run_dir)
     try:
         require_budget(run, "athena_bytes", 1)
@@ -205,6 +284,7 @@ def cmd_athena(args) -> int:
         gap(failure_reason(label, code, err), args.run_dir)
         return 0
     query_id = json.loads(out)["QueryExecutionId"]
+    add_pending(args.run_dir, "athena", query_id)
 
     execution = _wait_for_query(args, query_id)
     if execution is None:
@@ -212,6 +292,7 @@ def cmd_athena(args) -> int:
     scanned = int(execution.get("Statistics", {}).get("DataScannedInBytes", 0))
     # Failed and cancelled queries are still charged for what they scanned.
     record_use(args.run_dir, "athena_bytes", scanned)
+    clear_pending(args.run_dir, query_id)
     status = execution.get("Status", {})
     if status.get("State") != "SUCCEEDED":
         gap(f"Athena query {query_id} {status.get('State')}: {status.get('StateChangeReason', 'no reason given')}", args.run_dir)
@@ -233,10 +314,12 @@ def cmd_athena(args) -> int:
         basis=args.basis,
         complete=complete,
         rows=max(len(rows) - 1, 0),
+        role="query",
+        period=_query_period(params),
     )
     show_result(args.run_dir, evidence_id, args.query_file.name, text)
-    if len(rows) <= 1 and complete:
-        gap("query returned no rows", args.run_dir)
+    if complete:
+        empty_result_gap(", ".join(filter(None, [args.query_file.name, _query_period(params)])), rows, args.run_dir)
 
     run = load_run(args.run_dir)
     try:
@@ -269,7 +352,7 @@ def _paged_cost_explorer(args, base: list, token_names: tuple | None) -> tuple:
             return pages, True, 0
 
 
-def _save_pages(args, base: list, source: str, pages: list, complete: bool, basis: str = "") -> None:
+def _save_pages(args, base: list, source: str, pages: list, complete: bool, basis: str = "", period: str = "") -> None:
     if not pages:
         return
     # Pages are joined as returned, so their numbers keep the provider's exact text.
@@ -285,6 +368,8 @@ def _save_pages(args, base: list, source: str, pages: list, complete: bool, basi
         used=f"{len(pages)} request{'s' if len(pages) != 1 else ''}",
         basis=basis,
         complete=complete,
+        role="query",
+        period=period,
     )
     show_result(args.run_dir, evidence_id, source, raw)
     if not complete:
@@ -299,7 +384,7 @@ def cmd_ce(args) -> int:
             kind, key = item.split(":", 1)
             base.append(f"Type={kind},Key={key}")
     pages, complete, code = _paged_cost_explorer(args, base, ("NextPageToken", "--next-page-token"))
-    _save_pages(args, base, f"Cost Explorer {args.metric}, {args.start} to {args.end}", pages, complete, basis=args.basis)
+    _save_pages(args, base, f"Cost Explorer {args.metric}, {args.start} to {args.end}", pages, complete, basis=args.basis, period=_month_of(args.start, args.end))
     return code
 
 
@@ -310,37 +395,78 @@ def cmd_ce_commitment(args) -> int:
     return code
 
 
-def cmd_recommendations(args) -> int:
-    if args.source == "hub":
-        # Left deduplicated by resource on purpose: competing recommendations for
-        # one resource would otherwise look like savings that add up.
-        argv = _aws(args, "cost-optimization-hub", "list-recommendations", region=BILLING_REGION)
-        label, items_key, source = "aws cost-optimization-hub list-recommendations", "items", "Cost Optimization Hub"
-    else:
-        argv = _aws(args, "compute-optimizer", "get-ec2-instance-recommendations")
-        label, items_key, source = "aws compute-optimizer get-ec2-instance-recommendations", "instanceRecommendations", "Compute Optimizer"
+def _hub_recommendations(args) -> int:
+    # Left deduplicated by resource on purpose: competing recommendations for one
+    # resource would otherwise look like savings that add up.
+    argv = _aws(args, "cost-optimization-hub", "list-recommendations", region=BILLING_REGION)
     code, out, err = run_cli(argv)
     if code:
-        message = failure_reason(label, code, err)
-        if args.source == "hub":
-            message += ". It may not be enrolled; try --source compute-optimizer"
-        gap(message, args.run_dir)
+        gap(f"{failure_reason('aws cost-optimization-hub list-recommendations', code, err)}. It may not be enrolled; try --source compute-optimizer", args.run_dir)
         return 0
-    items = json.loads(out).get(items_key, [])
+    body = json.loads(out)
+    complete = not body.get("nextToken")
     evidence_id = add_evidence(
         args.run_dir,
         kind="recommendation",
-        source=source,
+        source="Cost Optimization Hub",
         command=" ".join(argv),
         raw=out.encode(),
         ext="json",
         identity=args.profile or "",
         used="1 call",
         basis="avoidable",
-        rows=len(items),
+        complete=complete,
+        rows=len(body.get("items", [])),
     )
-    show_result(args.run_dir, evidence_id, source, out)
+    show_result(args.run_dir, evidence_id, "Cost Optimization Hub", out)
+    if not complete:
+        gap("Cost Optimization Hub: the list is incomplete, so it can't back a figure", args.run_dir)
     return 0
+
+
+def _compute_optimizer_recommendations(args) -> int:
+    # This operation has no CLI paginator, so it returns one page and a token.
+    pages: list = []
+    rows = 0
+    token = None
+    complete = True
+    while True:
+        command = ["compute-optimizer", "get-ec2-instance-recommendations"]
+        if token:
+            command += ["--next-token", token]
+        code, out, err = run_cli(_aws(args, *command))
+        if code:
+            gap(failure_reason("aws compute-optimizer get-ec2-instance-recommendations", code, err), args.run_dir)
+            complete = False
+            break
+        pages.append(out.strip())
+        body = json.loads(out)
+        rows += len(body.get("instanceRecommendations", []))
+        token = body.get("nextToken")
+        if not token:
+            break
+    if not pages:
+        return 0
+    raw = '{"pages": [' + ",".join(pages) + "]}"
+    evidence_id = add_evidence(
+        args.run_dir,
+        kind="recommendation",
+        source="Compute Optimizer",
+        command="aws compute-optimizer get-ec2-instance-recommendations",
+        raw=raw.encode(),
+        ext="json",
+        identity=args.profile or "",
+        used=f"{len(pages)} call{'s' if len(pages) != 1 else ''}",
+        basis="avoidable",
+        complete=complete,
+        rows=rows,
+    )
+    show_result(args.run_dir, evidence_id, "Compute Optimizer", raw)
+    return 0
+
+
+def cmd_recommendations(args) -> int:
+    return _hub_recommendations(args) if args.source == "hub" else _compute_optimizer_recommendations(args)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -360,8 +486,13 @@ def _parser() -> argparse.ArgumentParser:
     workgroup.add_argument("--workgroup", type=_name, required=True)
     workgroup.set_defaults(handler=cmd_workgroup)
 
+    tables = commands.add_parser("tables", parents=[common], help="databases, or a database's tables, to find a CUR table")
+    tables.add_argument("--catalog", type=_name, default=DEFAULT_CATALOG)
+    tables.add_argument("--database", type=_name)
+    tables.set_defaults(handler=cmd_tables)
+
     schema = commands.add_parser("schema", parents=[common], help="a table's columns and partitions")
-    schema.add_argument("--catalog", type=_name, required=True)
+    schema.add_argument("--catalog", type=_name, default=DEFAULT_CATALOG)
     schema.add_argument("--database", type=_name, required=True)
     schema.add_argument("--table", type=_name, required=True)
     schema.set_defaults(handler=cmd_schema)

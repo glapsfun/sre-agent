@@ -120,7 +120,7 @@ CASES = [
         "gcp-invoice-total.sql",
         GCP_OCT,
         "gcp/billing.ndjson",
-        [{"invoice_month": "2026-10", "currency": "USD", "cost": "390.30", "credits": "-35.00", "net_cost": "355.30"}],
+        [{"invoice_month": "2026-10", "currency": "USD", "cost": "380.30", "credits": "-35.00", "net_cost": "345.30", "tax": "10.00"}],
         rewrites=["backticks", "numeric"],
     ),
     Case(
@@ -130,9 +130,9 @@ CASES = [
         [{"cost": "600.00", "credits": "-50.00"}],
         negative=True,
     ),
-    Case("gcp-drivers.sql", GCP_OCT, "gcp/billing.ndjson", None, rewrites=GCP_REWRITES, totals={"net_cost": "355.30", "cost": "390.30", "credits": "-35.00"}),
-    Case("gcp-no-owner.sql", {**GCP_OCT, "owner_label": "team"}, "gcp/billing.ndjson", [{"invoice_month": "2026-10", "currency": "USD", "no_owner_cost": "90.30"}], rewrites=GCP_REWRITES),
-    Case("gcp-effective.sql", {"table": "billing", "usage_start": "2026-10-01", "usage_end": "2026-11-01"}, "gcp/billing.ndjson", [{"usage_month": "2026-10", "currency": "USD", "effective_cost": "325.30"}], rewrites=[*GCP_REWRITES, "format_timestamp"]),
+    Case("gcp-drivers.sql", GCP_OCT, "gcp/billing.ndjson", None, rewrites=GCP_REWRITES, totals={"net_cost": "345.30", "cost": "380.30", "credits": "-35.00"}),
+    Case("gcp-no-owner.sql", {**GCP_OCT, "owner_label": "team"}, "gcp/billing.ndjson", [{"invoice_month": "2026-10", "currency": "USD", "no_owner_cost": "80.30"}], rewrites=GCP_REWRITES),
+    Case("gcp-effective.sql", {"table": "billing", "usage_start": "2026-10-01", "usage_end": "2026-11-01"}, "gcp/billing.ndjson", [{"usage_month": "2026-10", "currency": "USD", "effective_cost": "315.30"}], rewrites=[*GCP_REWRITES, "format_timestamp"]),
     Case(FIXTURES / "gcp/naive-usage-month.sql", {"table": "billing", "invoice_month": "2026-10"}, "gcp/billing.ndjson", [{"net_cost": "325.30"}], negative=True),
     Case("gcp-freshness.sql", GCP_OCT, "gcp/billing.ndjson", [{"max_usage_end": "2026-11-01 00:00:00", "max_export_time": "2026-11-03 06:00:00"}], rewrites=GCP_REWRITES),
     Case(
@@ -146,16 +146,26 @@ CASES = [
         rewrites=GCP_REWRITES,
     ),
     Case("gcp-bq-job-cost.sql", {"table": "jobs", "start_date": "2026-10-01", "end_date": "2026-11-01"}, "gcp/jobs.ndjson", [{"user_email": "ci@example.test", "total_bytes_billed": "100", "total_slot_ms": "1000"}], rewrites=GCP_REWRITES),
-    Case("aws-cur2-control-total.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00"}]),
+    Case("aws-cur2-control-total.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00", "tax": "80.00"}]),
     Case("aws-cur2-effective.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "effective_cost": "203.00"}]),
     Case("aws-cur2-effective.sql", {"table": "cur", "period": "2026-08"}, "aws/cur2.ndjson", [{"billing_period": "2026-08", "currency": "USD", "effective_cost": "5.00"}]),
     Case("aws-cur2-no-owner.sql", {**AWS_OCT, "owner_tag": "user_team"}, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "no_owner_cost": "620.00"}], rewrites=["element_at"]),
     Case("aws-cur2-commitments.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "total_commitment": "20.00", "used_commitment": "15.00", "unused_commitment": "5.00"}]),
     Case("aws-cur2-freshness.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "max_usage_end": "2026-11-01 00:00:00"}]),
     Case("aws-cur2-drivers.sql", AWS_OCT, "aws/cur2.ndjson", None, totals={"billed_cost": "770.00"}),
-    Case(FIXTURES / "aws/naive-effective.sql", AWS_OCT, "aws/cur2.ndjson", [{"effective_cost": "770.00"}], negative=True),
-    Case(FIXTURES / "aws/naive-split.sql", AWS_OCT, "aws/cur2.ndjson", [{"billed_cost": "810.00"}], negative=True),
-    Case("aws-cur-legacy-control-total.sql", LEGACY_OCT, "aws/cur-legacy.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00"}]),
+    # A credit stays on its own row, or it would read as a lower rate for the usage.
+    Case(
+        "aws-cur2-drivers.sql",
+        {"table": "cur", "period": "2026-07"},
+        "aws/cur2.ndjson",
+        [
+            {"usage_type": "BoxUsage", "line_item_type": "Usage", "quantity": "1000", "billed_cost": "1000.00"},
+            {"usage_type": "BoxUsage", "line_item_type": "Credit", "quantity": "0", "billed_cost": "-200.00"},
+        ],
+    ),
+    Case(FIXTURES / "aws/naive-effective.sql", AWS_OCT, "aws/cur2.ndjson", [{"effective_cost": "850.00"}], negative=True),
+    Case(FIXTURES / "aws/naive-split.sql", AWS_OCT, "aws/cur2.ndjson", [{"billed_cost": "890.00"}], negative=True),
+    Case("aws-cur-legacy-control-total.sql", LEGACY_OCT, "aws/cur-legacy.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00", "tax": "80.00"}]),
     Case("aws-cur-legacy-drivers.sql", LEGACY_OCT, "aws/cur-legacy.ndjson", None, totals={"billed_cost": "770.00"}),
 ]
 

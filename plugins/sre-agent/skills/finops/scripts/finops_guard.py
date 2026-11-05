@@ -148,3 +148,20 @@ def record_use(run_dir: Path, kind: str, amount: int) -> None:
     run = load_run(run_dir)
     run["budget"]["used"][kind] += amount
     save_run(run_dir, run)
+
+
+def add_pending(run_dir: Path, engine: str, job_id: str, estimate: int = 0) -> None:
+    """Notes a started query, so its cost still counts if this script loses track of it."""
+    run = load_run(run_dir)
+    run["budget"].setdefault("pending", []).append({"engine": engine, "job_id": job_id, "estimate": estimate})
+    save_run(run_dir, run)
+
+
+def clear_pending(run_dir: Path, job_id: str) -> None:
+    run = load_run(run_dir)
+    run["budget"]["pending"] = [item for item in run["budget"].get("pending", []) if item.get("job_id") != job_id]
+    save_run(run_dir, run)
+
+
+def pending_queries(run_dir: Path, engine: str) -> list:
+    return [item for item in load_run(run_dir)["budget"].get("pending", []) if item.get("engine") == engine]
