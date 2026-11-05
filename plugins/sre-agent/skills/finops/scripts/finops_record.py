@@ -45,6 +45,9 @@ _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _EXT = re.compile(r"^[a-z0-9]+$")
+_CREDENTIAL_ERROR = re.compile(r"Expired|credentials|InvalidClientTokenId|invalid_grant|reauth|UnauthorizedOperation: token", re.IGNORECASE)
+_DENIED_ERROR = re.compile(r"AccessDenied|access denied|not authorized|PERMISSION_DENIED|Forbidden", re.IGNORECASE)
+MAX_SHOWN_LINES = 60
 
 
 class RecordError(Exception):
@@ -368,6 +371,43 @@ def run_cli(argv: list, stdin: str | None = None, timeout: int = 300) -> tuple:
     except subprocess.TimeoutExpired:
         return 124, "", f"{argv[0]}: timed out after {timeout} seconds"
     return done.returncode, done.stdout, done.stderr
+
+
+def failure_reason(label: str, code: int, stderr: str) -> str:
+    """Turns a failed CLI call into a gap that says what to do about it."""
+    text = sanitize(stderr).strip()
+    if code == 127:
+        return f"{label}: the CLI isn't installed"
+    if code == 124:
+        return f"{label}: timed out"
+    if _CREDENTIAL_ERROR.search(text):
+        return f"{label}: credentials are expired or missing. Re-authenticate and rerun; evidence already collected is intact"
+    if _DENIED_ERROR.search(text):
+        operation = re.search(r"when calling the (\w+) operation", text)
+        return f"{label}: permission denied{f' for {operation.group(1)}' if operation else ''}"
+    first_line = text.splitlines()[0][:300] if text else f"exit {code}"
+    return f"{label} failed: {first_line}"
+
+
+def show_result(run_dir: Path, evidence_id: str, label: str, text: str) -> None:
+    """Announces new evidence and shows its start. The full result stays on disk."""
+    entry = next(item for item in load_run(run_dir)["evidence"] if item["id"] == evidence_id)
+    print(f"EVIDENCE {evidence_id} {entry['raw_path']}")
+    lines = text.splitlines()
+    shown = lines[:MAX_SHOWN_LINES]
+    if len(lines) > MAX_SHOWN_LINES:
+        shown.append(f"... {len(lines) - MAX_SHOWN_LINES} more lines in {entry['raw_path']}")
+    emit_external(label, "\n".join(shown))
+
+
+def parse_params(pairs: list) -> dict:
+    params = {}
+    for pair in pairs:
+        key, separator, value = pair.partition("=")
+        if not separator or not key:
+            raise RecordError(f"--param needs key=value, got {pair!r}")
+        params[key] = value
+    return params
 
 
 def _warn_if_not_ignored(base: Path) -> None:

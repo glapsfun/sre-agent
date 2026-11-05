@@ -25,6 +25,8 @@ REWRITES = {
     "backticks": lambda sql: sql.replace("`", '"'),
     # DuckDB's bare NUMERIC has scale 3; BigQuery's has scale 9.
     "numeric": lambda sql: re.sub(r"\bAS NUMERIC\b", "AS DECIMAL(38, 9)", sql),
+    # Athena's element_at returns a map's value; DuckDB's returns a one-item list.
+    "element_at": lambda sql: re.sub(r"element_at\((\w+), ('[^']*')\)", r"\1[\2]", sql),
 }
 
 GCP_BILLING_COLUMNS = {
@@ -45,8 +47,31 @@ GCP_BILLING_COLUMNS = {
     "labels": "STRUCT(key VARCHAR, value VARCHAR)[]",
 }
 
+AWS_CUR_COLUMNS = {
+    "bill_payer_account_id": "VARCHAR",
+    "line_item_usage_account_id": "VARCHAR",
+    "line_item_line_item_type": "VARCHAR",
+    "line_item_product_code": "VARCHAR",
+    "line_item_usage_type": "VARCHAR",
+    "line_item_usage_amount": "DOUBLE",
+    "line_item_currency_code": "VARCHAR",
+    "line_item_unblended_cost": "DOUBLE",
+    "line_item_usage_end_date": "TIMESTAMP",
+    "savings_plan_savings_plan_effective_cost": "DOUBLE",
+    "savings_plan_total_commitment_to_date": "DOUBLE",
+    "savings_plan_used_commitment": "DOUBLE",
+    "reservation_effective_cost": "DOUBLE",
+    "reservation_unused_amortized_upfront_fee_for_billing_period": "DOUBLE",
+    "reservation_unused_recurring_fee": "DOUBLE",
+    "reservation_reservation_a_r_n": "VARCHAR",
+    "split_line_item_split_cost": "DOUBLE",
+    "split_line_item_unused_cost": "DOUBLE",
+}
+
 FIXTURE_COLUMNS = {
     "gcp/billing.ndjson": GCP_BILLING_COLUMNS,
+    "aws/cur2.ndjson": {**AWS_CUR_COLUMNS, "billing_period": "VARCHAR", "resource_tags": "MAP(VARCHAR, VARCHAR)"},
+    "aws/cur-legacy.ndjson": {**AWS_CUR_COLUMNS, "year": "VARCHAR", "month": "VARCHAR", "bill_billing_period_start_date": "TIMESTAMP", "resource_tags_user_team": "VARCHAR"},
 }
 
 
@@ -55,9 +80,11 @@ class Case:
     sql_file: str | Path
     params: dict[str, str]
     fixture: str
-    expected_rows: list[dict[str, str]]
+    expected_rows: list[dict[str, str]] | None
     rewrites: list[str] = field(default_factory=list)
     negative: bool = False
+    # Column to expected sum across rows, for queries with many rows.
+    totals: dict[str, str] = field(default_factory=dict)
 
     @property
     def path(self) -> Path:
@@ -65,6 +92,8 @@ class Case:
 
 
 GCP_OCT = {"table": "billing", "invoice_month": "2026-10"}
+AWS_OCT = {"table": "cur", "period": "2026-10"}
+LEGACY_OCT = {"table": "cur", "year": "2026", "month": "10"}
 
 CASES = [
     Case(
@@ -81,6 +110,17 @@ CASES = [
         [{"cost": "600.00", "credits": "-50.00"}],
         negative=True,
     ),
+    Case("aws-cur2-control-total.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00"}]),
+    Case("aws-cur2-effective.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "effective_cost": "203.00"}]),
+    Case("aws-cur2-effective.sql", {"table": "cur", "period": "2026-08"}, "aws/cur2.ndjson", [{"billing_period": "2026-08", "currency": "USD", "effective_cost": "5.00"}]),
+    Case("aws-cur2-no-owner.sql", {**AWS_OCT, "owner_tag": "user_team"}, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "no_owner_cost": "620.00"}], rewrites=["element_at"]),
+    Case("aws-cur2-commitments.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "total_commitment": "20.00", "used_commitment": "15.00", "unused_commitment": "5.00"}]),
+    Case("aws-cur2-freshness.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "max_usage_end": "2026-11-01 00:00:00"}]),
+    Case("aws-cur2-drivers.sql", AWS_OCT, "aws/cur2.ndjson", None, totals={"billed_cost": "770.00"}),
+    Case(FIXTURES / "aws/naive-effective.sql", AWS_OCT, "aws/cur2.ndjson", [{"effective_cost": "770.00"}], negative=True),
+    Case(FIXTURES / "aws/naive-split.sql", AWS_OCT, "aws/cur2.ndjson", [{"billed_cost": "810.00"}], negative=True),
+    Case("aws-cur-legacy-control-total.sql", LEGACY_OCT, "aws/cur-legacy.ndjson", [{"billing_period": "2026-10", "currency": "USD", "billed_cost": "770.00"}]),
+    Case("aws-cur-legacy-drivers.sql", LEGACY_OCT, "aws/cur-legacy.ndjson", None, totals={"billed_cost": "770.00"}),
 ]
 
 
@@ -127,6 +167,12 @@ def run_case(case: Case) -> str | None:
     if result.returncode != 0:
         return f"duckdb failed: {result.stderr.strip()}"
     rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    for column, value in case.totals.items():
+        total = sum((Decimal(row[column]) for row in rows), Decimal(0))
+        if total != Decimal(value):
+            return f"{column} sums to {total}, expected {value}"
+    if case.expected_rows is None:
+        return None
     if len(rows) != len(case.expected_rows):
         return f"expected {len(case.expected_rows)} rows, got {len(rows)}: {rows}"
     for want, got in zip(case.expected_rows, rows):
@@ -138,8 +184,29 @@ def run_case(case: Case) -> str | None:
     return None
 
 
+def text_rules() -> list[str]:
+    """Every shipped query names its columns and stays read-only and bounded."""
+    sys.path.insert(0, str(SQL_DIR.parent / "scripts"))
+    from finops_guard import GuardError, check_bounded, check_read_only
+
+    problems = []
+    for path in sorted(SQL_DIR.glob("*.sql")):
+        raw = path.read_text(encoding="utf-8")
+        sql = re.sub(r"\{\{\w+\}\}", "x", raw)
+        partition = "year" if "legacy" in path.name else "billing_period" if path.name.startswith("aws-") else None
+        try:
+            check_read_only(sql)
+            check_bounded(sql, partition)
+        except GuardError as exc:
+            problems.append(f"{path.name}: {exc}")
+    return problems
+
+
 def main() -> int:
     failures = 0
+    for problem in text_rules():
+        failures += 1
+        print(f"FAIL: {problem}")
     for case in CASES:
         message = run_case(case)
         label = case.path.name + (" (negative control)" if case.negative else "")
