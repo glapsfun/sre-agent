@@ -1,0 +1,4 @@
+interface:
+  display_name: "FinOps"
+  short_description: "Answer cloud cost questions with numbers a script has proved"
+  default_prompt: "Use $finops to answer a cloud cost question: find the billing sources, reconcile to the invoice, explain what changed, and report savings with evidence for every number."

@@ -31,6 +31,18 @@ Checked 2026-11-05 unless noted.
 | `gcloud recommender recommendations list` needs a location, a recommender, and one scope | [gcloud reference](https://docs.cloud.google.com/sdk/gcloud/reference/recommender/recommendations/list) |
 | The Cloud Billing REST reference lists no method returning incurred cost, and its API discovery document shows no schema holding one | [REST reference](https://docs.cloud.google.com/billing/docs/reference/rest), [discovery document](https://cloudbilling.googleapis.com/$discovery/rest?version=v1) |
 
+## Background
+
+Checked 2026-11-05. These informed the workflow and the accounting rules.
+
+- [FinOps phases](https://www.finops.org/framework/phases/), [framework](https://www.finops.org/framework/), and [unit economics](https://www.finops.org/framework/capabilities/unit-economics/)
+- [FOCUS cost comparison](https://focus.finops.org/docs/specification/v1-4/features/cost-comparison/). Report the FOCUS version actually in the data, and don't normalize across providers
+- [AWS billing versus Cost Explorer](https://docs.aws.amazon.com/cost-management/latest/userguide/differences-billing-data-cost-explorer-data.html), [CUR 2.0 dictionary](https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2.html), [Savings Plan fields](https://docs.aws.amazon.com/cur/latest/userguide/savingsplans-columns.html), [split cost allocation](https://docs.aws.amazon.com/cur/latest/userguide/split-cost-allocation-data.html), [Cost Optimization Hub](https://docs.aws.amazon.com/cost-management/latest/userguide/cost-optimization-hub.html)
+- [GCP export overview](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery), [GCP query examples](https://docs.cloud.google.com/billing/docs/how-to/bq-examples), [spend-based CUD models](https://docs.cloud.google.com/docs/cuds-multiprice), [GKE cost allocation](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cost-allocations)
+- [OpenCost specification](https://opencost.io/docs/specification/)
+
+No reported customer saving from any source is used as a promised outcome.
+
 ## Not confirmed
 
 - That every discovery call is free. AWS documents a per-request charge only for Cost Explorer, which discovery never calls. The BigQuery pricing page could not be read when checked, so free dataset and table listing rests on general knowledge.

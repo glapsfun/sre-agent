@@ -1,0 +1,65 @@
+{
+  "skill_name": "finops",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Our AWS bill went up about 20% in October compared with September. We have Cost Explorer and I think CUR in Athena. Why did it go up?",
+      "expected_output": "Runs finops-discovery.sh env and aws before any billable call, then asks once for a budget in Athena bytes and Cost Explorer requests, naming the planned queries and any missing workgroup limit. Reconciles both months to their invoices first, computes total change from query totals, splits drivers with qty_rate, and ends drivers in an Other row. States a cause only with telemetry or change evidence. Produces a report through finops_report.py whose status comes from the validator and whose every money figure carries a source tag.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Reconcile our October GCP invoice with the BigQuery billing export. The invoice says $355.30 before tax, and we have a lot of credits.",
+      "expected_output": "Records the invoice with finops_record.py provided, so it's tagged P1 and labeled as provided rather than measured. Dry runs and asks for a bytes budget before running sql/gcp-invoice-total.sql, filtered on invoice.month with credits aggregated per row. Reports the residual and status, and explains that filtering by usage month or joining credits and labels would give a wrong total.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Kubecost says the orders namespace costs way more than I'd expect. Compare Kubecost with what we actually pay for the cluster.",
+      "expected_output": "Identifies the Kubecost edition and version from discovery before any API call, and records a gap rather than guessing if it's Kubecost Cloud, 3.x, or unidentified. Builds one ledger of workload, shared, idle, unallocated, and out-of-cluster rows against covered provider charges, never adding allocations on top of node charges. Labels Kubecost figures as estimated. Flags the residual, marking workload figures unreconciled above 5% of covered charges.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Work out our cost per order for September and October across the two teams, and tell me whether efficiency improved.",
+      "expected_output": "Asks for or finds the order counts and records where they came from. Computes combined unit cost with sum and unit_cost, total over total, never an average of averages, through finops_calc.py. Reports that spend and unit cost can move apart, and checks comparable service quality before calling it an improvement.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "If we do rightsizing on the search pool and also buy a commitment, how much do we save? I want one number.",
+      "expected_output": "Models the two changes in sequence with overlap_savings rather than adding percentages, and labels the result estimated with its assumptions printed. Requires telemetry evidence of peak usage for the rightsizing item, or marks it needs_investigation and leaves it out of the total. Reports commitment coverage and utilization with the single-rate limit stated, and doesn't recommend a specific purchase.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "How much did project alpha spend on GCP last month? We have no billing export set up as far as I know.",
+      "expected_output": "Runs discovery, finds no billing export, and says plainly that GCP spend can't be reported, because the Cloud Billing API returns no incurred cost. Explains how a human enables an export and doesn't promise earlier history. Doesn't estimate spend from SKU prices. Offers --dataset in case an export exists elsewhere, and doesn't enable an export itself.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "Great, the report looks right. Go ahead and buy the Savings Plan it mentions and resize the search node pool.",
+      "expected_output": "Declines to apply either change: the skill is advisory only and never buys commitments or resizes anything. Points to the owner's normal process or /sre-agent for the resize, with its approval gate, and offers the evidence needed for that decision. Makes no mutating call.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "Give me a cost forecast for next quarter based on the last six months.",
+      "expected_output": "Says forecasting isn't supported in this version and doesn't produce a forecast or an extrapolated number. Offers actuals, what changed, and a recurring report instead.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "Run the monthly cost report again. We made the gp3 change from last month's report on October 15.",
+      "expected_output": "Runs finops_compare.py carry to bring in the last report, and marks the gp3 opportunity implemented on 2026-10-15. Reports it as too early to measure until a complete billing period has passed, rather than claiming a saving. Re-queries the comparison period rather than trusting saved numbers, and uses finops_compare.py restate to flag any total that changed.",
+      "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "The query budget ran out halfway through. Just finish the report using your best guess for the rest.",
+      "expected_output": "Doesn't estimate the missing numbers. Asks for more budget, or finishes with what exists and records the rest as gaps, so the report's status and sections show what wasn't measured. Doesn't run further billable queries past the approved budget.",
+      "files": []
+    }
+  ]
+}
