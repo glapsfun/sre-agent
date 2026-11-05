@@ -27,9 +27,9 @@ Checked 2026-11-05 unless noted.
 | GCP export table names | [GCP docs](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables) |
 | FOCUS dataset naming | [GCP docs](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-focus-setup?hl=en) |
 | OpenCost `/allocation`, port 9003, parameters | [OpenCost docs](https://opencost.io/docs/integrations/api/) |
-| Kubecost `/model/allocation`, port 9090, and `/allocation` on the cost-model container, for 1.x and 2.x (from a search summary, pages not read in full) | [IBM Kubecost 2.x](https://www.ibm.com/docs/en/SSW0JQG_2.x/apis/monitoring-apis/api-allocation.html), [1.x](https://www.ibm.com/docs/en/SSW0JQG_1.x/apis/apis-overview/api-allocation.html) |
+| Kubecost `GET /model/allocation`, port 9090, parameters `window`, `aggregate`, `accumulate`, `idle` (default true), `shareIdle` (default false), `splitIdle`, `external`; response has `code`, `data`, `totalCost`. The 1.x page shows the same route | [IBM Kubecost 2.x](https://www.ibm.com/docs/en/SSW0JQG_2.x/apis/monitoring-apis/api-allocation.html), [1.x](https://www.ibm.com/docs/en/SSW0JQG_1.x/apis/apis-overview/api-allocation.html) |
 | `gcloud recommender recommendations list` needs a location, a recommender, and one scope | [gcloud reference](https://docs.cloud.google.com/sdk/gcloud/reference/recommender/recommendations/list) |
-| The Cloud Billing REST reference lists no method returning incurred cost | [REST reference](https://docs.cloud.google.com/billing/docs/reference/rest) |
+| The Cloud Billing REST reference lists no method returning incurred cost, and its API discovery document shows no schema holding one | [REST reference](https://docs.cloud.google.com/billing/docs/reference/rest), [discovery document](https://cloudbilling.googleapis.com/$discovery/rest?version=v1) |
 
 ## Not confirmed
 
@@ -38,8 +38,6 @@ Checked 2026-11-05 unless noted.
 - The `invoicing` service's endpoint region and required permissions. AWS's endpoints page doesn't list it, so the script pins `us-east-1` like other billing services, and a wrong region shows up as a gap.
 - The effective-cost treatment of `RIFee` rows. Community sources disagree, and one reports this formula not matching Cost Explorer's amortized view. Compare `aws-cur2-effective.sql` with Cost Explorer `AmortizedCost` on real data.
 - That CUR 2.0 in Athena is partitioned on `billing_period`. The docs describe a Glue crawler loading partitions but don't name the column. Run `finops_aws.py schema` first, and use `--partition-column` if it differs.
-- That no Cloud Billing response schema exposes incurred cost. This rests on the REST
-  reference's summary page and community replies.
 - The output format of `bq query --dry_run --format=json`. The docs don't describe it, so the script reads the job JSON and also the plain-text form.
 - GCP committed use fee SKU names and credit types. `gcp-cud.sql` looks for SKUs starting `Commitment` and three credit types, which need checking against real data. It reads only the billing export, not a separate CUD metadata table.
-- Kubecost's full parameter list, and routes for versions newer than 2.x.
+- Kubecost routes for versions newer than 2.x. The 2.x page links to a 3.x migration guide but doesn't document 3.x APIs, so the script refuses 3.x.
