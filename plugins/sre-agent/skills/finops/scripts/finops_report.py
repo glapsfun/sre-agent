@@ -57,12 +57,14 @@ def fmt_pct(value: str) -> str:
 
 
 def fmt_bytes(count: int) -> str:
-    gigabytes = Decimal(count) / (1024**3)
-    if count and gigabytes < Decimal("0.1"):
-        unit, amount = "MB", Decimal(count) / (1024**2)
-    else:
-        unit, amount = "GB", gigabytes
-    text = format(amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP), "f")
+    unit, size = "GB", 1024**3
+    if 0 < count < 1024:
+        unit, size = "B", 1
+    elif 0 < count < 1024**2:
+        unit, size = "KB", 1024
+    elif 0 < count < 1024**3:
+        unit, size = "MB", 1024**2
+    text = format((Decimal(count) / size).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP), "f")
     return f"{text[:-2] if text.endswith('.0') else text} {unit}"
 
 
@@ -125,7 +127,7 @@ class _Report:
         ]
         if self.scope.get("scope_detail"):
             lines.append(f"Scope: {cell(self.scope['scope_detail'])}")
-        basis = f"{self.basis_text()}, {cell(self.scope['currency'])}. Data through {cell(self.scope.get('data_through'))}."
+        basis = f"{self.basis_text()}, {cell(self.scope['currency'])}. Data through {cell(self.scope.get('data_through') or 'not available')}."
         if self.scope.get("comparison_period"):
             basis += f" Compared with {cell(_period_label(self.scope['comparison_period']))}."
         lines.append(basis)

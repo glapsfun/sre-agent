@@ -46,6 +46,8 @@ class Formats(unittest.TestCase):
         self.assertEqual(fmt_bytes(5368709120), "5 GB")
         self.assertEqual(fmt_bytes(0), "0 GB")
         self.assertEqual(fmt_bytes(1048576), "1 MB")
+        self.assertEqual(fmt_bytes(2048), "2 KB")
+        self.assertEqual(fmt_bytes(600), "600 B")
 
     def test_formula_fills_in_values(self):
         self.assertEqual(fill_formula("residual", {"control": "56940.00", "query_total": "56938.72"}), "56,940.00 - 56,938.72")
@@ -136,6 +138,18 @@ class Layout(ReportCase):
         text = self.report(change)
         self.assertRegex(text, r"(?m)^Status: Partial scope")
         self.assertIn("Scope: member account 111122223333", text)
+
+    def test_a_run_with_no_data_says_so(self):
+        def change(run):
+            run["scope"]["data_through"] = None
+            run.update(figures={}, calculations=[], evidence=[], reconciliation=[], changes=None, past_savings=[], opportunities=[], savings_total=None)
+
+        text = self.report(change)
+        self.assertRegex(text, r"(?m)^Status: Not reconciled")
+        self.assertIn("No billed figures, USD. Data through not available.", text)
+        self.assertIn("No reconciliation was done.", text)
+        self.assertIn("No evidence was collected.", text)
+        self.assertNotIn("$", text)
 
     def test_missing_values_say_so_and_are_not_zero(self):
         text = self.report(lambda run: run["reconciliation"][0].update(query_total=None, residual=None))

@@ -232,7 +232,8 @@ class _Checker:
             self.fail("UNTAGGED_MONEY", where, "free text holds a money figure; use a figure or calculation reference")
 
     def required(self) -> None:
-        if not self.run["scope"].get("data_through"):
+        # A run that found no billing data has nothing to date, and still gets a report.
+        if self.run.get("figures") and not self.run["scope"].get("data_through"):
             self.fail("MISSING_FIELD", "scope.data_through", "the data-through date is required")
 
     def raw_results(self) -> None:
