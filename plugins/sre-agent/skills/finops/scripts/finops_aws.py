@@ -22,11 +22,12 @@ from finops_guard import (
     add_pending,
     check_bounded,
     check_read_only,
-    clear_pending,
+    default_basis,
     load_query,
     pending_queries,
     record_use,
     require_budget,
+    settle_query,
     strip_leading_comments,
 )
 from finops_record import RecordError, add_evidence, emit_external, empty_result_gap, failure_reason, gap, load_run, parse_params, run_cli, show_result
@@ -39,6 +40,8 @@ EXIT_BUDGET = 3
 RESULT_PAGE_ITEMS = "1000"
 TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 METRICS = ["UnblendedCost", "AmortizedCost", "NetAmortizedCost", "NetUnblendedCost", "BlendedCost", "UsageQuantity"]
+# The metric decides the basis. The others have none, so they can't reconcile to a bill.
+METRIC_BASIS = {"UnblendedCost": "billed", "NetUnblendedCost": "billed", "AmortizedCost": "effective", "NetAmortizedCost": "effective"}
 # The name each operation uses for its page token differs across Cost Explorer.
 COMMITMENT_OPS = {
     "get-savings-plans-utilization": None,
@@ -258,8 +261,7 @@ def _settle_pending(args) -> str | None:
         state = execution.get("Status", {}).get("State", "")
         if state not in TERMINAL_STATES:
             return f"Athena query {job} is still {state}, so its use is unknown. Try again when it finishes"
-        record_use(args.run_dir, "athena_bytes", int(execution.get("Statistics", {}).get("DataScannedInBytes", 0)))
-        clear_pending(args.run_dir, job)
+        settle_query(args.run_dir, "athena_bytes", job, int(execution.get("Statistics", {}).get("DataScannedInBytes", 0)))
     return None
 
 
@@ -291,8 +293,7 @@ def cmd_athena(args) -> int:
         return 0
     scanned = int(execution.get("Statistics", {}).get("DataScannedInBytes", 0))
     # Failed and cancelled queries are still charged for what they scanned.
-    record_use(args.run_dir, "athena_bytes", scanned)
-    clear_pending(args.run_dir, query_id)
+    settle_query(args.run_dir, "athena_bytes", query_id, scanned)
     status = execution.get("Status", {})
     if status.get("State") != "SUCCEEDED":
         gap(f"Athena query {query_id} {status.get('State')}: {status.get('StateChangeReason', 'no reason given')}", args.run_dir)
@@ -311,7 +312,7 @@ def cmd_athena(args) -> int:
         identity=args.profile or "",
         job_id=query_id,
         used=fmt_bytes(scanned),
-        basis=args.basis,
+        basis=args.basis or default_basis(args.query_file),
         complete=complete,
         rows=max(len(rows) - 1, 0),
         role="query",
@@ -384,7 +385,7 @@ def cmd_ce(args) -> int:
             kind, key = item.split(":", 1)
             base.append(f"Type={kind},Key={key}")
     pages, complete, code = _paged_cost_explorer(args, base, ("NextPageToken", "--next-page-token"))
-    _save_pages(args, base, f"Cost Explorer {args.metric}, {args.start} to {args.end}", pages, complete, basis=args.basis, period=_month_of(args.start, args.end))
+    _save_pages(args, base, f"Cost Explorer {args.metric}, {args.start} to {args.end}", pages, complete, basis=METRIC_BASIS.get(args.metric, ""), period=_month_of(args.start, args.end))
     return code
 
 
@@ -504,7 +505,7 @@ def _parser() -> argparse.ArgumentParser:
     athena.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     athena.add_argument("--partition-column", type=_name, default="billing_period")
     athena.add_argument("--source", default="")
-    athena.add_argument("--basis", choices=["billed", "effective", "avoidable"], default="billed")
+    athena.add_argument("--basis", choices=["billed", "effective", "avoidable"], help="defaults to effective for a query named effective, otherwise billed")
     athena.set_defaults(handler=cmd_athena)
 
     ce = commands.add_parser("ce", parents=[common], help="Cost Explorer costs, charged per request")
@@ -513,7 +514,6 @@ def _parser() -> argparse.ArgumentParser:
     ce.add_argument("--granularity", choices=["MONTHLY", "DAILY"], required=True)
     ce.add_argument("--metric", choices=METRICS, required=True)
     ce.add_argument("--group-by", type=_group, action="append", default=[], metavar="DIMENSION:KEY")
-    ce.add_argument("--basis", choices=["billed", "effective"], default="billed")
     ce.set_defaults(handler=cmd_ce)
 
     commitment = commands.add_parser("ce-commitment", parents=[common], help="commitment utilization or coverage, charged per request")

@@ -22,10 +22,11 @@ from finops_guard import (
     check_bounded,
     check_read_only,
     clear_pending,
+    default_basis,
     load_query,
     pending_queries,
-    record_use,
     require_budget,
+    settle_query,
     strip_leading_comments,
 )
 from finops_record import RecordError, add_evidence, add_gap, emit_external, empty_result_gap, failure_reason, gap, load_run, parse_params, run_cli, show_result
@@ -37,8 +38,10 @@ TIMED_OUT = 124
 # bq returns only 100 rows by default, which would silently undercount a bill.
 MAX_ROWS = 1000000
 MONITORING_URL = "https://monitoring.googleapis.com/v3/projects/{project}/timeSeries"
+MONTH_PARAMS = ("invoice_month", "first_month", "second_month")
 _DRY_RUN_TEXT = re.compile(r"process (\d+) bytes")
 _BYTES_LIMIT = re.compile(r"exceeded limit for bytes billed", re.IGNORECASE)
+_MONTH = re.compile(r"^\d{4}-\d{2}$")
 
 
 def _matching(pattern: str, label: str):
@@ -75,7 +78,11 @@ def _bq(args, *global_flags: str) -> list:
 
 
 def _prepared(args) -> str:
-    sql = load_query(args.query_file, parse_params(args.param))
+    params = parse_params(args.param)
+    for key in MONTH_PARAMS:
+        if key in params and not _MONTH.match(params[key]):
+            raise GuardError(f"{key} must be YYYY-MM like the run's periods, got {params[key]!r}. The prepared queries convert it to the export's YYYYMM")
+    sql = load_query(args.query_file, params)
     check_read_only(sql)
     check_bounded(sql, None)
     return sql
@@ -140,13 +147,13 @@ def _settle_pending(args) -> str | None:
             body = json.loads(out)
             if body.get("status", {}).get("state") != "DONE":
                 return f"BigQuery job {job} is still running, so its use is unknown. Try again when it finishes"
-            billed = int(body["statistics"]["query"].get("totalBytesBilled", 0))
-        except (ValueError, KeyError, TypeError):
+            # A job that failed has no query statistics, and bills nothing.
+            billed = int(body.get("statistics", {}).get("query", {}).get("totalBytesBilled", 0))
+        except (ValueError, KeyError, TypeError, AttributeError):
             # It may never have started, but counting too much is the safe side of a budget.
             billed = int(item.get("estimate", 0))
             add_gap(args.run_dir, f"couldn't read BigQuery job {job}, so the budget records its dry-run estimate")
-        record_use(args.run_dir, "bigquery_bytes", billed)
-        clear_pending(args.run_dir, job)
+        settle_query(args.run_dir, "bigquery_bytes", job, billed)
     return None
 
 
@@ -174,16 +181,17 @@ def cmd_query(args) -> int:
     if code == TIMED_OUT:
         gap(f"BigQuery job {job_id} timed out here and may still be running. Its use isn't counted yet, and the next query checks it first. Don't start it again", args.run_dir)
         return 0
-    clear_pending(args.run_dir, job_id)
     if code:
         details = f"{err}\n{out}"
         if _BYTES_LIMIT.search(details):
+            clear_pending(args.run_dir, job_id)
             return _budget_stop(f"bigquery_bytes: {args.query_file.name} would be billed more than the {remaining} remaining, and failed without charge")
-        gap(failure_reason(f"bq query {args.query_file.name}", code, details), args.run_dir)
+        # The client names the job, so it can exist and bill even though bq exited non-zero.
+        gap(f"{failure_reason(f'bq query {args.query_file.name}', code, details)}. BigQuery job {job_id} may have started anyway. Its use isn't counted yet, and the next query checks it first", args.run_dir)
         return 0
 
     billed, reservation = _job_statistics(args, job_id, estimate)
-    record_use(args.run_dir, "bigquery_bytes", billed)
+    settle_query(args.run_dir, "bigquery_bytes", job_id, billed)
     if reservation:
         add_gap(args.run_dir, "this project uses capacity pricing, so bytes billed have no direct dollar meaning")
 
@@ -202,7 +210,7 @@ def cmd_query(args) -> int:
         identity=_identity(),
         job_id=job_id,
         used=fmt_bytes(billed),
-        basis=args.basis,
+        basis=args.basis or default_basis(args.query_file),
         complete=not truncated,
         rows=rows,
         role="query",
@@ -313,7 +321,7 @@ def _parser() -> argparse.ArgumentParser:
 
     query = commands.add_parser("query", parents=[common, located, query_flags], help="run one read-only query under the approved budget")
     query.add_argument("--source", default="")
-    query.add_argument("--basis", choices=["billed", "effective", "avoidable"], default="billed")
+    query.add_argument("--basis", choices=["billed", "effective", "avoidable"], help="defaults to effective for a query named effective, otherwise billed")
     query.set_defaults(handler=cmd_query)
 
     recommendations = commands.add_parser("recommendations", parents=[common, located], help="native savings recommendations")

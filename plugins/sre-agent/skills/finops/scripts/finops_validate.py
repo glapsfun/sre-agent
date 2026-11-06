@@ -18,7 +18,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from finops_calc import FORMULAS, UNDEFINED, CalcError, compute, too_early
+from finops_calc import FORMULAS, UNDEFINED, CalcError, compute, measure_window, too_early
 from finops_record import LocatorError, RecordError, is_closed, load_run, locate, raw_currency
 
 STATUS_NOT_RECONCILED = "Not reconciled"
@@ -238,6 +238,10 @@ class _Checker:
         self.run = run
         self.failures: list = []
         self.evidence = {entry.get("id"): entry for entry in run.get("evidence", [])}
+        # A currency code next to a number is only safe to read as money for the report's
+        # own currency: any three capitals would also catch "CPU 80" or "NAT 20".
+        code = re.escape(str(run.get("scope", {}).get("currency", "USD")))
+        self.scope_money = re.compile(rf"\b{code}\s?\d|\d\s?{code}\b")
 
     def fail(self, code: str, where: str, message: str) -> None:
         self.failures.append(Failure(code, where, message))
@@ -255,7 +259,7 @@ class _Checker:
             self.fail("UNRESOLVED_REF", where, f"no evidence {evidence_id}")
 
     def check_text(self, where: str, text: object) -> None:
-        if isinstance(text, str) and _MONEY.search(text):
+        if isinstance(text, str) and (_MONEY.search(text) or self.scope_money.search(text)):
             self.fail("UNTAGGED_MONEY", where, "free text holds a money figure; use a figure or calculation reference")
 
     def all_refs(self, ref: object) -> set:
@@ -315,6 +319,8 @@ class _Checker:
             self.fail("FIGURE_KIND", where, f"a {kind} figure can't rest on {entry.get('kind')} evidence")
         if entry.get("kind") == "telemetry" and figure.get("currency"):
             self.fail("FIGURE_KIND", where, "telemetry can back a usage count, but not a money figure")
+        if entry.get("basis") and figure.get("basis") != entry.get("basis"):
+            self.fail("FIGURE_KIND", where, f"labeled {figure.get('basis')} basis, but {entry.get('id')} was recorded as {entry.get('basis')}")
         if not entry.get("complete", False):
             self.fail("EVIDENCE_INCOMPLETE", where, f"{entry.get('id')} is incomplete and can't back a figure")
         path = self.run_dir / entry.get("raw_path", "")
@@ -464,10 +470,19 @@ class _Checker:
         if evidence.get("role") != "query":
             self.fail("RECON_ROLE", where, f"{ref} wasn't read from a query result")
             return
+        if evidence.get("basis") != "billed":
+            self.fail("RECON_ROLE", where, f"{evidence.get('id')} was recorded as {evidence.get('basis') or 'no'} basis, and only billed cost can reconcile")
+        if period not in self.figure_periods(figure):
+            self.fail("RECON_ROLE", where, f"{ref} is for another period than {period}")
+
+    def figure_periods(self, figure: dict) -> list:
+        """The periods a figure's location names, or else the period its evidence covers."""
         where_values = (figure.get("locator", {}).get("where") or {}).values()
         named = [value for value in where_values if isinstance(value, str) and _PERIOD_VALUE.match(value)]
-        if period not in named if named else evidence.get("period") != period:
-            self.fail("RECON_ROLE", where, f"{ref} is for another period than {period}")
+        if named:
+            return named
+        period = self.evidence.get(figure.get("evidence"), {}).get("period")
+        return [period] if period else []
 
     def second_view_role(self, where: str, entry: dict) -> None:
         ref = entry.get("second_view")
@@ -676,6 +691,24 @@ class _Checker:
                 continue
             if not data_through or too_early(implemented, date.fromisoformat(data_through)):
                 self.fail("PAST_TOO_EARLY", where, "no complete billing period is known to have passed since the change")
+            if calc is not None and calc.get("name") == "realized_savings":
+                self.saving_window(where, calc, implemented)
+
+    def saving_window(self, where: str, calc: dict, implemented: date) -> None:
+        """A saving compares the last complete month before a change with the first month
+        starting after it. A person's figure states no period, so only measured ones are checked."""
+        baseline, post = measure_window(implemented)
+        months = {"baseline_cost": baseline, "baseline_usage": baseline, "post_cost": post, "post_usage": post}
+        figures = self.run.get("figures", {})
+        for field, month in months.items():
+            ref = calc.get("inputs", {}).get(field)
+            if ref is None or _is_literal(ref):
+                continue
+            for name in sorted(self.all_refs(ref)):
+                figure = figures.get(name, {})
+                if figure.get("kind") == "measured" and self.figure_periods(figure) != [month]:
+                    found = ", ".join(self.figure_periods(figure)) or "an unknown period"
+                    self.fail("PAST_WINDOW", where, f"{field} uses {name}, which is for {found}, and a change on {implemented} needs {month}")
 
     def gaps(self) -> None:
         for index, item in enumerate(self.run.get("gaps", [])):

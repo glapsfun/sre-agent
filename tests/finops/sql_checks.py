@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 import subprocess
 import sys
@@ -125,7 +126,7 @@ CASES = [
     ),
     Case(
         FIXTURES / "gcp/naive-invoice-total.sql",
-        GCP_OCT,
+        {"table": "billing", "invoice_month": "202610"},
         "gcp/billing.ndjson",
         [{"cost": "600.00", "credits": "-50.00"}],
         negative=True,
@@ -152,6 +153,8 @@ CASES = [
     Case("aws-cur2-no-owner.sql", {**AWS_OCT, "owner_tag": "user_team"}, "aws/cur2.ndjson", [{"billing_period": "2026-10", "currency": "USD", "no_owner_cost": "620.00"}], rewrites=["element_at"]),
     Case("aws-cur2-commitments.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "total_commitment": "20.00", "used_commitment": "15.00", "unused_commitment": "5.00"}]),
     Case("aws-cur2-freshness.sql", AWS_OCT, "aws/cur2.ndjson", [{"billing_period": "2026-10", "max_usage_end": "2026-11-01 00:00:00"}]),
+    # Usage stops on the 19th here, and a monthly fee line carries the month's end.
+    Case("aws-cur2-freshness.sql", {"table": "cur", "period": "2026-06"}, "aws/cur2.ndjson", [{"billing_period": "2026-06", "max_usage_end": "2026-06-20 00:00:00"}]),
     Case("aws-cur2-drivers.sql", AWS_OCT, "aws/cur2.ndjson", None, totals={"billed_cost": "770.00"}),
     # A credit stays on its own row, or it would read as a lower rate for the usage.
     Case(
@@ -248,9 +251,20 @@ def text_rules() -> list[str]:
     return problems
 
 
+def fixture_rules() -> list[str]:
+    """Fixtures hold invoice.month as the export does, or the queries prove nothing about it."""
+    problems = []
+    for name in ("gcp/billing.ndjson", "gcp/cud.ndjson"):
+        for line in (FIXTURES / name).read_text(encoding="utf-8").splitlines():
+            month = json.loads(line)["invoice"]["month"]
+            if not re.fullmatch(r"\d{6}", month):
+                problems.append(f"{name}: invoice.month {month!r} isn't YYYYMM")
+    return problems
+
+
 def main() -> int:
     failures = 0
-    for problem in text_rules():
+    for problem in [*text_rules(), *fixture_rules()]:
         failures += 1
         print(f"FAIL: {problem}")
     for case in CASES:

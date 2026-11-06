@@ -7,6 +7,7 @@ These are hypotheses to test, not findings about a particular account.
 | Latest day is unusually cheap | Delayed or incomplete export | Freshness query, export refresh time, completeness against prior days |
 | GCP SQL exceeds invoice | Cost multiplied by credit or label joins | Control total before `UNNEST`, and row-level credit aggregation |
 | GCP SQL misses invoice charges | Usage month confused with invoice month | Compare `invoice.month` with late usage and adjustment rows |
+| An ad hoc GCP query returns no rows | `invoice.month` compared with `2026-10` | It holds `YYYYMM`, such as `202610` |
 | AWS daily cost spikes at purchase | Cash and amortized views mixed | Charge types, upfront purchases, effective-cost view |
 | Commitment savings appear to vanish | CUD model or accounting changed | Migration date, consumption model, fee SKUs, signed offsets |
 | Node removal predicts savings but the bill stays flat | Commitments remain payable, or capacity is replaced | Hourly commitment use, replacement nodes, actual net charges |
@@ -25,6 +26,7 @@ These are hypotheses to test, not findings about a particular account.
 | Status is "Not reconciled" by a small amount | Rounding, a Marketplace invoice left out, or an after-tax invoice figure | Sum all invoices for the period, and compare before tax |
 | `RECON_ROLE` on a figure that looks right | It came from the wrong place: another period, a calculation, or query results where an invoice belongs | The evidence entry's `role` and `period` |
 | `BUDGET:` says a query's use is unknown | An earlier query outlived its status check | Wait for it and rerun. Don't start it again by hand |
+| `PAST_WINDOW` on a saving that looks right | An input comes from another month, or from evidence with no period | Use the months `finops_compare.py mark` prints, and a query that takes a period |
 
 [GCP schema and timing](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage),
 [AWS export processing](https://docs.aws.amazon.com/cur/latest/userguide/dataexports-processing.html),

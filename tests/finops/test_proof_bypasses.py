@@ -59,7 +59,7 @@ class Case(unittest.TestCase):
         return evidence_id
 
     def add_csv_figure(self, name, text, where, column, value, currency="USD", kind="measured", basis="billed", **evidence):
-        evidence_id = add_evidence(self.run_dir, source="test", command="test", raw=text.encode(), ext="csv", **{"kind": "billing", "role": "query", **evidence})
+        evidence_id = add_evidence(self.run_dir, source="test", command="test", raw=text.encode(), ext="csv", **{"kind": "billing", "role": "query", "basis": "billed", **evidence})
         run = load_run(self.run_dir)
         run["figures"][name] = {"value": value, "kind": kind, "currency": currency, "basis": basis, "evidence": evidence_id, "locator": {"type": "csv", "where": where, "column": column}}
         save_run(self.run_dir, run)

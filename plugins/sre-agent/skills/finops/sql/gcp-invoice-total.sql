@@ -3,8 +3,9 @@
 -- each billing row before grouping, because a row can hold several credits and joining
 -- them would multiply its cost. Filter on invoice.month, not usage time: late usage
 -- lands on a later invoice.
+-- invoice.month holds YYYYMM. A run's periods are YYYY-MM, so this converts both ways.
 SELECT
-  invoice.month AS invoice_month,
+  CONCAT(SUBSTR(invoice.month, 1, 4), '-', SUBSTR(invoice.month, 5, 2)) AS invoice_month,
   currency,
   SUM(CASE WHEN cost_type = 'tax' THEN 0 ELSE CAST(cost AS NUMERIC) END) AS cost,
   SUM(COALESCE((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) AS c), 0)) AS credits,
@@ -12,6 +13,6 @@ SELECT
     + SUM(COALESCE((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) AS c), 0)) AS net_cost,
   SUM(CASE WHEN cost_type = 'tax' THEN CAST(cost AS NUMERIC) ELSE 0 END) AS tax
 FROM `{{table}}`
-WHERE invoice.month = '{{invoice_month}}'
+WHERE invoice.month = REPLACE('{{invoice_month}}', '-', '')
 GROUP BY invoice_month, currency
 ORDER BY currency

@@ -241,9 +241,12 @@ def cmd_restate(args) -> int:
             continue
         name = f"prior_query_total_{period}"
         run["figures"][name] = _prior_figure(prior, prior_totals[period], entry["id"], "billed")
-        calc = {"id": _next_calc_id(run), "name": "change", "kind": "estimated", "assumptions": [], "inputs": {"before": name, "after": ref}}
+        # The step is rerun after fixing a record, so an earlier result is replaced, not added to.
+        earlier = next((calc for calc in run["calculations"] if calc.get("inputs", {}).get("before") == name), None)
+        calc = {"id": earlier["id"] if earlier else _next_calc_id(run), "name": "change", "kind": "estimated", "assumptions": [], "inputs": {"before": name, "after": ref}}
         calc["outputs"] = compute("change", input_values(run, calc))
-        run["calculations"].append(calc)
+        if not earlier:
+            run["calculations"].append(calc)
         merge(
             args.run_dir,
             {

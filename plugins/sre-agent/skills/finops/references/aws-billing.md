@@ -44,12 +44,18 @@ the control total reports them in its own `tax` column.
 | `sql/aws-cur2-effective.sql` | `table`, `period` | `billing_period,currency,effective_cost` | What did it consume? |
 | `sql/aws-cur2-no-owner.sql` | `table`, `period`, `owner_tag` | `billing_period,currency,no_owner_cost` | What has no owner? |
 | `sql/aws-cur2-commitments.sql` | `table`, `period` | `billing_period,total_commitment,used_commitment,unused_commitment` | Is the commitment used? |
-| `sql/aws-cur2-freshness.sql` | `table`, `period` | `billing_period,max_usage_end` | How current is the data? |
+| `sql/aws-cur2-freshness.sql` | `table`, `period` | `billing_period,max_usage_end` | How current is the data? Usage lines only, because a monthly fee line can carry the month's end date |
 | `sql/aws-cur-legacy-control-total.sql` | `table`, `year`, `month` | `billing_period,currency,billed_cost,tax` | Legacy CUR, `--partition-column year` |
 | `sql/aws-cur-legacy-drivers.sql` | `table`, `year`, `month` | `billing_period,product,usage_type,line_item_type,currency,quantity,billed_cost` | Legacy CUR, `--partition-column year` |
 
 Ad hoc queries are allowed under the same guard: one read-only statement, named columns, and a
-partition filter.
+partition filter in the `WHERE` of every block that reads a table. Common table expressions and
+subqueries count as blocks, and one that only reads a filtered block needs no filter of its own.
+
+Evidence records a query's basis: effective for a query named `effective`, otherwise billed, unless
+`--basis` says otherwise. Cost Explorer takes its basis from `--metric`: `UnblendedCost` and
+`NetUnblendedCost` are billed, `AmortizedCost` and `NetAmortizedCost` are effective, and the rest have
+none, so they can't reconcile.
 
 ```bash
 scripts/finops_aws.py athena <run_dir> --workgroup finops --database billing \

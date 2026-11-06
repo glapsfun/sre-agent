@@ -26,6 +26,10 @@ All are in `sql/`. Read the schema first with `finops_gcp.py schema`, and run th
 `finops_gcp.py query`. `table` is the full export table, such as
 `proj.billing.gcp_billing_export_v1_0123AB`.
 
+The export stores `invoice.month` as `YYYYMM`, such as `202610`. Pass months to the prepared queries
+as `YYYY-MM`, like the run's periods: they convert it, and print `invoice_month` as `YYYY-MM`. An ad hoc
+query has to compare with `'202610'` itself, because `'2026-10'` matches no rows.
+
 Totals are before tax, because the invoice figure you ask for is. They leave out rows with `cost_type`
 of `tax`, and the invoice total reports those in its own `tax` column.
 
@@ -60,8 +64,9 @@ A `LIMIT` doesn't reduce a scan on a non-clustered table. The prepared queries f
 `invoice.month`, which doesn't prune partitions, so check the dry-run bytes on large exports.
 
 On capacity pricing, the bytes limit has no direct dollar meaning, and the script records a gap
-saying so. If `bq` times out here, the job may still be running: it stays pending, and the next query
-checks it first and charges it, or charges the estimate if the job can't be read.
+saying so. If `bq` times out or fails here, the job may still be running: it stays pending, and the next
+query checks it first and charges it, or charges the estimate if the job can't be read. Only the
+bytes-limit failure is known to be free.
 
 [BigQuery cost controls](https://docs.cloud.google.com/bigquery/docs/best-practices-costs)
 

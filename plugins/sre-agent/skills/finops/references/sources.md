@@ -23,6 +23,7 @@ Checked 2026-11-05 unless noted.
 | Job fields `statistics.query.totalBytesBilled`, `statistics.query.totalBytesProcessed`, and `statistics.reservation_id` | [Job resource](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job) |
 | `INFORMATION_SCHEMA.JOBS` needs a region qualifier, and summing costs should exclude `SCRIPT` statements | [JOBS view](https://docs.cloud.google.com/bigquery/docs/information-schema-jobs) |
 | Detailed export columns, with `cost` and `credits.amount` as floats, cast to NUMERIC before summing | [Detailed usage schema](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage) |
+| Export column `invoice.month` is `YYYYMM`, such as `201901`. Checked 2026-11-06 | [Detailed usage schema](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage) |
 | Cloud Monitoring `projects.timeSeries.list` takes `filter` and `interval` | [Monitoring API](https://docs.cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.timeSeries/list) |
 | GCP export table names | [GCP docs](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables) |
 | FOCUS dataset naming | [GCP docs](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-focus-setup?hl=en) |
@@ -49,6 +50,7 @@ No reported customer saving from any source is used as a promised outcome.
 - That Athena has no dry run or scan estimate. The page checked only doesn't mention one.
 - The `invoicing` service's endpoint region and required permissions. AWS's endpoints page doesn't list it, so the script pins `us-east-1` like other billing services, and a wrong region shows up as a gap.
 - The effective-cost treatment of `RIFee` rows. Community sources disagree, and one reports this formula not matching Cost Explorer's amortized view. Compare `aws-cur2-effective.sql` with Cost Explorer `AmortizedCost` on real data.
+- That monthly fee lines in CUR can carry a month-end date. `aws-cur2-freshness.sql` counts only `Usage`, `DiscountedUsage`, and `SavingsPlanCoveredUsage` lines either way, so this affects only why the filter exists.
 - That CUR 2.0 in Athena is partitioned on `billing_period`. The docs describe a Glue crawler loading partitions but don't name the column. Run `finops_aws.py schema` first, and use `--partition-column` if it differs.
 - The output format of `bq query --dry_run --format=json`. The docs don't describe it, so the script reads the job JSON and also the plain-text form.
 - GCP committed use fee SKU names and credit types. `gcp-cud.sql` looks for SKUs starting `Commitment` and three credit types, which need checking against real data. It reads only the billing export, not a separate CUD metadata table.

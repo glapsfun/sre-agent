@@ -23,7 +23,7 @@ be what its row claims:
 
 - **Invoice:** provided by a person, or read from that period's invoice evidence. A sum must count every
   invoice in the evidence, and evidence holding two currencies can't reconcile.
-- **Query total:** measured, on billed basis, from a query result for that period.
+- **Query total:** measured, from a query result for that period, with evidence recorded as billed basis.
 - **Second view:** the same, from separate evidence.
 - **Closed:** must match the calendar, in both directions.
 - **Currency:** the report's currency, and the one the raw result states.
@@ -57,7 +57,7 @@ result. The report renders values from those references, so it can't print one e
 | `FIGURE_MISMATCH` | A figure differs from the value at its location |
 | `LOCATOR_FAILED` | The location finds no value, or more than one |
 | `EVIDENCE_INCOMPLETE` | The figure rests on partial results |
-| `FIGURE_KIND` | The evidence can't back that kind of figure, such as measured on a cost-tool allocation |
+| `FIGURE_KIND` | The evidence can't back that kind of figure, such as measured on a cost-tool allocation, or the figure's basis differs from the one recorded on its evidence |
 | `UNRESOLVED_REF` | A reference or tag has no entry |
 | `UNTAGGED_MONEY` | Free text holds a money figure. Use a reference |
 | `CALC_MISMATCH` | Recomputing gives a different result, or it can't be recomputed |
@@ -78,6 +78,7 @@ result. The report renders values from those references, so it can't print one e
 | `INVESTIGATE_IN_TOTAL` | An item that needs investigation counts toward the savings total |
 | `PAST_TOO_EARLY` | A saving is measured before a complete billing period has passed |
 | `PAST_RESULT_CALC` | A measured saving isn't from a `realized_savings` calculation with no assumptions |
+| `PAST_WINDOW` | A measured saving's input isn't from the required baseline or comparison month, or its month can't be read |
 | `PAST_STATUS` | A past saving's status claims more or less than its result says |
 | `STATUS_CLAIM` | A claimed status doesn't hold, or a period's closed flag disagrees with the calendar |
 | `RECORD_INVALID` | The record can't be read |
@@ -94,13 +95,15 @@ Say this plainly when it matters:
   reconciliation runs on real data.
 - **That a cited cause is the true cause.** The validator checks that evidence is cited, not that it
   supports the claim.
-- **Figures from outside the bill.** A provided figure is only as good as whoever typed it.
+- **Figures from outside the bill.** A provided figure is only as good as whoever typed it, and it states
+  no period, so a measured saving's months aren't checked for it.
 - **That the scope is what it says.** `--scope-kind` is declared by the run, using what discovery shows. A
   member account's run called whole-bill wouldn't be caught unless its invoices disagree.
 - **Currency when a raw result doesn't state one.** Without a currency field or column, the label is taken
   as given.
 - **Numbers in free text without a currency.** A bare `3600` in a sentence isn't caught, so keep amounts in
-  references.
+  references. Free text is checked for `$`, `€`, `£`, USD, EUR, GBP, and the report's own currency code, so
+  an amount in any other currency isn't caught either.
 - **Deliberate tampering.** The hashes guard against mistakes, not someone editing files on purpose.
 
 ## Period rules
@@ -110,4 +113,5 @@ the data-through date. A quiet latest day is not evidence of lower spend. If the
 unset rather than typing one: the report says it isn't known, and a past saving can't count as measured.
 
 A saving counts as measured only after a complete billing period since the change. The baseline is the last
-complete month before it, and the comparison is the first month starting after it.
+complete month before it, and the comparison is the first month starting after it. Each measured input has to
+state its month, through its locator or its evidence, so use a query that takes a period.

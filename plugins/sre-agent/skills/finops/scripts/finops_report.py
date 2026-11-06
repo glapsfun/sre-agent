@@ -202,7 +202,7 @@ class _Report:
         add("Whole-bill total", "whole_bill_total")
         add("Share of whole bill", "scope_share", percent=True)
 
-        headers = ["Item", *[cell(_month_name(entry.get("period"))) for entry in entries], "Source"]
+        headers = ["Item", *[cell(_period_label(entry.get("period"))) for entry in entries], "Source"]
         aligns = [_LEFT, *[_RIGHT for _ in entries], _LEFT]
         lines.extend(_table(headers, aligns, rows))
         lines.extend(self.ledger())

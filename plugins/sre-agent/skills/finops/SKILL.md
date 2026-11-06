@@ -137,7 +137,8 @@ rest as gaps.
 ### 4. Collect evidence
 
 Read the schema before running SQL against it. The prepared queries in `sql/` take
-parameters through `--param`.
+parameters through `--param`. Run billing queries one at a time: each checks the budget
+before it starts, so overlapping ones could pass that check together.
 
 - AWS: `scripts/finops_aws.py`, with `invoice`, `tables`, `schema`, `athena`, `ce`,
   `ce-commitment`, `recommendations`. See `references/aws-billing.md`.

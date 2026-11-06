@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -20,6 +21,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -185,6 +187,27 @@ def save_run(run_dir: Path, run: dict) -> None:
         raise
 
 
+@contextmanager
+def updating(run_dir: Path):
+    """Loads the record for one change, and saves it unless the change raises.
+
+    Script calls can overlap, and without this lock each would save over what the
+    others just added. The lock is on the directory, so a run holds no extra file, and it
+    isn't reentrant, so don't nest these.
+    """
+    try:
+        directory = os.open(run_dir, os.O_RDONLY)
+    except OSError as exc:
+        raise RecordError(f"can't lock {run_dir}: {exc}") from exc
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        run = load_run(run_dir)
+        yield run
+        save_run(run_dir, run)
+    finally:
+        os.close(directory)
+
+
 def add_evidence(
     run_dir: Path,
     *,
@@ -212,42 +235,41 @@ def add_evidence(
     if not _EXT.match(ext):
         raise RecordError(f"unsafe extension: {ext!r}")
     run_dir = Path(run_dir)
-    run = load_run(run_dir)
-    evidence_id = f"E{len(run['evidence']) + 1}"
+    with updating(run_dir) as run:
+        evidence_id = f"E{len(run['evidence']) + 1}"
 
-    # The raw file goes first, so a crash can't leave an entry with no result.
-    raw_path = f"evidence/{evidence_id}.{ext}"
-    (run_dir / raw_path).write_bytes(raw)
-    if query_text is not None:
-        query_file = f"evidence/{evidence_id}.sql"
-        (run_dir / query_file).write_text(query_text, encoding="utf-8")
-    else:
-        query_file = f"evidence/{evidence_id}.sh"
-        (run_dir / query_file).write_text(command + "\n", encoding="utf-8")
+        # The raw file goes first, so a crash can't leave an entry with no result.
+        raw_path = f"evidence/{evidence_id}.{ext}"
+        (run_dir / raw_path).write_bytes(raw)
+        if query_text is not None:
+            query_file = f"evidence/{evidence_id}.sql"
+            (run_dir / query_file).write_text(query_text, encoding="utf-8")
+        else:
+            query_file = f"evidence/{evidence_id}.sh"
+            (run_dir / query_file).write_text(command + "\n", encoding="utf-8")
 
-    run["evidence"].append(
-        {
-            "id": evidence_id,
-            "kind": kind,
-            "source": source,
-            "command": command,
-            "query_file": query_file,
-            "identity": identity,
-            "job_id": job_id,
-            "used": used,
-            "utc": _utc_now(),
-            "basis": basis,
-            "currency": currency,
-            "raw_path": raw_path,
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "complete": complete,
-            "rows": rows,
-            "role": role,
-            "period": period,
-            "currencies": currencies or [],
-        }
-    )
-    save_run(run_dir, run)
+        run["evidence"].append(
+            {
+                "id": evidence_id,
+                "kind": kind,
+                "source": source,
+                "command": command,
+                "query_file": query_file,
+                "identity": identity,
+                "job_id": job_id,
+                "used": used,
+                "utc": _utc_now(),
+                "basis": basis,
+                "currency": currency,
+                "raw_path": raw_path,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "complete": complete,
+                "rows": rows,
+                "role": role,
+                "period": period,
+                "currencies": currencies or [],
+            }
+        )
     return evidence_id
 
 
@@ -260,27 +282,25 @@ def add_provided(run_dir: Path, *, description: str, value: str, currency: str, 
         raise RecordError(f"provided value is not finite: {value!r}")
     if not _CURRENCY.match(currency):
         raise RecordError(f"currency must be a three-letter code, got {currency!r}")
-    run = load_run(run_dir)
-    provided_id = f"P{len(run['provided']) + 1}"
-    run["provided"].append(
-        {
-            "id": provided_id,
-            "description": description,
-            "value": value,
-            "currency": currency,
-            "given_by": given_by,
-            "given_at": _utc_now(),
-        }
-    )
-    save_run(run_dir, run)
+    with updating(run_dir) as run:
+        provided_id = f"P{len(run['provided']) + 1}"
+        run["provided"].append(
+            {
+                "id": provided_id,
+                "description": description,
+                "value": value,
+                "currency": currency,
+                "given_by": given_by,
+                "given_at": _utc_now(),
+            }
+        )
     return provided_id
 
 
 def add_gap(run_dir: Path, text: str) -> None:
-    run = load_run(run_dir)
-    if text not in run["gaps"]:
-        run["gaps"].append(text)
-        save_run(run_dir, run)
+    with updating(run_dir) as run:
+        if text not in run["gaps"]:
+            run["gaps"].append(text)
 
 
 def _check_day(value: str) -> None:
@@ -293,33 +313,31 @@ def _check_day(value: str) -> None:
 
 
 def update_scope(run_dir: Path, **fields) -> None:
-    run = load_run(run_dir)
-    for key, value in fields.items():
-        if key not in {"data_through", "last_report"}:
-            raise RecordError(f"scope field can't be changed: {key}")
-        if key == "data_through" and value is not None:
-            _check_day(value)
-        run["scope"][key] = value
-    save_run(run_dir, run)
+    with updating(run_dir) as run:
+        for key, value in fields.items():
+            if key not in {"data_through", "last_report"}:
+                raise RecordError(f"scope field can't be changed: {key}")
+            if key == "data_through" and value is not None:
+                _check_day(value)
+            run["scope"][key] = value
 
 
 def merge(run_dir: Path, fragment: dict) -> None:
-    run = load_run(run_dir)
-    for key, value in fragment.items():
-        if key in SCRIPT_OWNED:
-            raise RecordError(f"{key} is written only by scripts")
-        if key not in MODEL_SECTIONS:
-            raise RecordError(f"unknown section: {key}")
-        _check_section_shape(key, value)
-        if key == "figures":
-            run["figures"].update(value)
-        elif key == "gaps":
-            run["gaps"].extend(item for item in value if item not in run["gaps"])
-        elif key in KEYED_SECTIONS:
-            _merge_keyed(run[key], value, KEYED_SECTIONS[key])
-        else:
-            run[key] = value
-    save_run(run_dir, run)
+    with updating(run_dir) as run:
+        for key, value in fragment.items():
+            if key in SCRIPT_OWNED:
+                raise RecordError(f"{key} is written only by scripts")
+            if key not in MODEL_SECTIONS:
+                raise RecordError(f"unknown section: {key}")
+            _check_section_shape(key, value)
+            if key == "figures":
+                run["figures"].update(value)
+            elif key == "gaps":
+                run["gaps"].extend(item for item in value if item not in run["gaps"])
+            elif key in KEYED_SECTIONS:
+                _merge_keyed(run[key], value, KEYED_SECTIONS[key])
+            else:
+                run[key] = value
 
 
 def _check_section_shape(key: str, value: object) -> None:
@@ -340,27 +358,26 @@ def remove(run_dir: Path, section: str, key: str | None = None) -> None:
         raise RecordError(f"{section} is written only by scripts")
     if section not in MODEL_SECTIONS:
         raise RecordError(f"unknown section: {section}")
-    run = load_run(run_dir)
-    if section in {"kubernetes_ledger", "changes", "savings_total"}:
-        run[section] = None
-    elif key is None:
-        raise RecordError(f"removing from {section} needs a key")
-    elif section == "figures":
-        if key not in run["figures"]:
-            raise RecordError(f"no figure {key}")
-        del run["figures"][key]
-    elif section == "gaps":
-        kept = [item for item in run["gaps"] if (item.get("text") if isinstance(item, dict) else item) != key]
-        if len(kept) == len(run["gaps"]):
-            raise RecordError(f"no gap with the text {key!r}")
-        run["gaps"] = kept
-    else:
-        field = KEYED_SECTIONS[section]
-        kept = [item for item in run[section] if item.get(field) != key]
-        if len(kept) == len(run[section]):
-            raise RecordError(f"no entry {key} in {section}")
-        run[section] = kept
-    save_run(run_dir, run)
+    with updating(run_dir) as run:
+        if section in {"kubernetes_ledger", "changes", "savings_total"}:
+            run[section] = None
+        elif key is None:
+            raise RecordError(f"removing from {section} needs a key")
+        elif section == "figures":
+            if key not in run["figures"]:
+                raise RecordError(f"no figure {key}")
+            del run["figures"][key]
+        elif section == "gaps":
+            kept = [item for item in run["gaps"] if (item.get("text") if isinstance(item, dict) else item) != key]
+            if len(kept) == len(run["gaps"]):
+                raise RecordError(f"no gap with the text {key!r}")
+            run["gaps"] = kept
+        else:
+            field = KEYED_SECTIONS[section]
+            kept = [item for item in run[section] if item.get(field) != key]
+            if len(kept) == len(run[section]):
+                raise RecordError(f"no entry {key} in {section}")
+            run[section] = kept
 
 
 def _merge_keyed(existing: list, incoming: list, key: str) -> None:
@@ -601,14 +618,13 @@ def main(argv: list | None = None) -> int:
             _warn_if_not_ignored(Path(args.base))
             print(run_dir)
         elif args.command == "approve-budget":
-            run = load_run(args.run_dir)
-            run["budget"]["approved"] = True
-            run["budget"]["limits"] = {
-                "athena_bytes": args.athena_bytes,
-                "bigquery_bytes": args.bigquery_bytes,
-                "ce_requests": args.ce_requests,
-            }
-            save_run(args.run_dir, run)
+            with updating(args.run_dir) as run:
+                run["budget"]["approved"] = True
+                run["budget"]["limits"] = {
+                    "athena_bytes": args.athena_bytes,
+                    "bigquery_bytes": args.bigquery_bytes,
+                    "ce_requests": args.ce_requests,
+                }
         elif args.command == "provided":
             provided_id = add_provided(
                 args.run_dir,
