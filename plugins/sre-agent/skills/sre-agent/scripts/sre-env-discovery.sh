@@ -13,6 +13,7 @@ cloud providers. Never mutates anything and never prints secret values.
 
 Environment:
   SRE_SKIP_CLUSTER=true   Skip all live-cluster calls (offline mode)
+  SRE_KUBE_CONTEXT=<ctx>  Pin every kubectl call to one context
 EOF
 }
 
@@ -27,6 +28,16 @@ section() {
 
 have() {
   command -v "$1" >/dev/null 2>&1
+}
+
+# SRE_KUBE_CONTEXT pins every kubectl call here to one cluster, so switching the
+# current context in another terminal can't redirect this script.
+if [[ -n "${SRE_KUBE_CONTEXT:-}" ]] && command -v kubectl >/dev/null 2>&1; then
+  kubectl() { command kubectl --context "$SRE_KUBE_CONTEXT" "$@"; }
+fi
+
+current_context() {
+  printf '%s' "${SRE_KUBE_CONTEXT:-$(kubectl config current-context)}"
 }
 
 cluster_reachable() {
@@ -47,13 +58,13 @@ if [[ "$SKIP_CLUSTER" == "true" ]]; then
   echo "Skipped live-cluster checks because SRE_SKIP_CLUSTER=true"
 elif ! have kubectl; then
   echo "kubectl not found; no cluster inspection possible"
-elif ! kubectl config current-context >/dev/null 2>&1; then
+elif [[ -z "${SRE_KUBE_CONTEXT:-}" ]] && ! kubectl config current-context >/dev/null 2>&1; then
   echo "kubectl present but no current context configured"
 elif ! kubectl get --raw /readyz --request-timeout=5s >/dev/null 2>&1; then
-  echo "context: $(kubectl config current-context)"
+  echo "context: $(current_context)"
   echo "API unreachable (expired credentials, VPN, or network) — no live-cluster evidence available"
 else
-  echo "context: $(kubectl config current-context)"
+  echo "context: $(current_context)"
   kubectl version 2>/dev/null | sed 's/^/version: /' || echo "server version unavailable (no connectivity?)"
   if kubectl auth can-i list namespaces >/dev/null 2>&1; then
     echo "namespaces:"

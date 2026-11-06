@@ -19,6 +19,9 @@ terraform -chdir=<tf-dir> state list | grep -i <resource-name-or-type>
 terraform -chdir=<tf-dir> state show <resource-address>
 ```
 
+`state show` prints attribute values and masks only those marked sensitive, so
+cite addresses and attribute names, not values.
+
 If state access isn't available (no backend credentials, or the agent only
 has read access to the repo, not the backend), fall back to grep across the
 module for the identifier evidence already produced — the IAM role name

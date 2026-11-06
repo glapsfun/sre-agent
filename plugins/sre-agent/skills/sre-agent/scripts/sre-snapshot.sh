@@ -21,6 +21,8 @@ referenced, so no secret value is ever read into this script's output.
 `diff` compares two snapshot files and reports every ADDED/REMOVED/CHANGED
 line between them.
 
+Set SRE_KUBE_CONTEXT to pin every call to one context.
+
 Exit codes:
   0  No difference - no mutation detected.
   1  A difference was found - treat it as a caught mutation.
@@ -38,6 +40,12 @@ EOF
 KINDS=(deployment statefulset daemonset configmap service horizontalpodautoscaler poddisruptionbudget)
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# SRE_KUBE_CONTEXT pins every kubectl call here to one cluster, so switching the
+# current context in another terminal can't redirect this script.
+if [[ -n "${SRE_KUBE_CONTEXT:-}" ]] && command -v kubectl >/dev/null 2>&1; then
+  kubectl() { command kubectl --context "$SRE_KUBE_CONTEXT" "$@"; }
+fi
 
 # Every kubectl call goes through here: bounded so a hung/degraded API server
 # fails fast instead of blocking the snapshot (same convention as this skill's
