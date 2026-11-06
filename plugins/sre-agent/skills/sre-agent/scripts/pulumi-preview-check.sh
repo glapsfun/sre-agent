@@ -29,8 +29,11 @@ Exit codes:
   1  Preview succeeded, but at least one delete or replace is present -
      treat as high-risk and surface every listed URN before approval.
   2  Usage error (missing/invalid <stack-dir>, or no Pulumi.yaml there).
-  3  Environment error - pulumi/jq missing, or `pulumi preview` itself
-     failed (including "no stack selected").
+  3  Environment error - pulumi/jq missing, `pulumi preview` itself failed
+     (including "no stack selected"), or its output is not one preview
+     document with `steps` and `changeSummary` (empty, or the event stream
+     PULUMI_ENABLE_STREAMING_JSON_PREVIEW produces). Output that can't be
+     read is never classified.
 EOF
 }
 
@@ -78,6 +81,21 @@ json_file="$work_dir/preview.json"
 
 if ! pulumi -C "$stack_dir" preview --json "$@" >"$json_file"; then
   echo "pulumi preview failed - see output above" >&2
+  exit 3
+fi
+
+# Exactly one JSON document carrying both keys the classification reads. Anything
+# else would otherwise classify as "no changes" below.
+if ! jq -es '
+  length == 1
+  and (.[0]
+    | type == "object"
+      and has("steps")
+      and has("changeSummary")
+      and ((.steps // []) | type == "array")
+      and ((.changeSummary // {}) | type == "object"))
+' "$json_file" >/dev/null 2>&1; then
+  echo "pulumi preview --json returned no complete preview (empty, an event stream, or not preview JSON) - refusing to classify it" >&2
   exit 3
 fi
 

@@ -86,8 +86,15 @@ own reading" principle `scripts/sre-snapshot.sh` applies to Phase 3 and
 `scripts/terraform-plan-check.sh` applies to Terraform remediation:
 
 ```bash
-scripts/pulumi-preview-check.sh <stack-dir> [pulumi preview args...]
+scripts/pulumi-preview-check.sh <stack-dir> --save-plan=<absolute-plan-file> [pulumi preview args...]
 ```
+
+`--save-plan` is passed through to `pulumi preview` (Pulumi marks it a
+preview-stage flag) and records the operations that were classified, so
+step 5 can hold the update to them. Put the file outside the repo and delete
+it after the update, or as soon as the option is dropped. Exit `3` means the
+preview failed or its JSON could not be read: that is a blocker to report,
+never a clean preview.
 
 It reads the preview JSON's own `changeSummary` object for the op-count
 summary (same/create/update/delete/replace/create-replacement/
@@ -101,13 +108,22 @@ sentence.
 
 ## 5. Apply and rollback
 
-Apply only after approval, and only the exact change already classified
-and shown — never re-preview-and-apply blind, since state may have moved
-between the two:
+Apply only after approval, and hold the update to the plan saved in step 4,
+with the same extra arguments (`--target`, `--config-file`) the preview had.
+Never run a bare `pulumi up --yes`: it previews again and applies whatever
+it finds, and state may have moved since the preview the user saw.
 
 ```bash
-pulumi -C <stack-dir> up --yes
+pulumi -C <stack-dir> up --yes --plan=<absolute-plan-file>
 ```
+
+`--plan` (marked experimental by Pulumi) fails the update when an operation
+goes beyond the saved plan, such as a replace where the plan had an update.
+If that happens, go back to step 4: classify a new preview, show it, and get
+approval again. If the installed CLI rejects `--save-plan` or `--plan`, the
+update cannot be held to the classified preview: say so in the option's Risk
+field before approval, and immediately before `pulumi up --yes` re-run the
+classifier and stop if its output differs from what was approved.
 
 Rollback is a Git operation, not a Pulumi one: revert the program commit
 and re-run `pulumi up --yes`, the same way `references/remediation.md`'s GitOps

@@ -80,6 +80,24 @@ def _input_items(calc: dict) -> list:
     return items
 
 
+def _feeds_itself(run: dict, calc: dict) -> bool:
+    """True when following the calculation's inputs leads back to its own output."""
+    visited: set = set()
+    pending = [calc]
+    while pending:
+        for item in _input_items(pending.pop()):
+            match = _CALC_REF.match(item) if isinstance(item, str) else None
+            if not match:
+                continue
+            if match.group(1) == calc.get("id"):
+                return True
+            upstream = _find_calc(run, match.group(1))
+            if upstream is not None and match.group(1) not in visited:
+                visited.add(match.group(1))
+                pending.append(upstream)
+    return False
+
+
 def _calc_currency(run: dict, calc: dict, seen: frozenset = frozenset()) -> str | None:
     if calc.get("id") in seen:
         return None
@@ -349,6 +367,10 @@ class _Checker:
         name = calc.get("name")
         if name not in FORMULAS:
             self.fail("CALC_UNKNOWN", where, f"unknown calculation {name!r}")
+            return
+        # Recomputing a calculation from its own stored output proves nothing.
+        if _feeds_itself(self.run, calc):
+            self.fail("CALC_CYCLE", where, "its inputs lead back to its own output")
             return
         try:
             values = input_values(self.run, calc)

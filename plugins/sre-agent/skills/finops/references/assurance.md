@@ -62,6 +62,7 @@ result. The report renders values from those references, so it can't print one e
 | `UNTAGGED_MONEY` | Free text holds a money figure. Use a reference |
 | `CALC_MISMATCH` | Recomputing gives a different result, or it can't be recomputed |
 | `CALC_UNKNOWN` | No such calculation |
+| `CALC_CYCLE` | A calculation's inputs lead back to its own output |
 | `CALC_KIND` | Marked calculated but uses an assumption or estimate, or an assumption is unstated |
 | `CURRENCY_MIX` | One calculation, a driver table, or a reconciliation row mixes currencies |
 | `CURRENCY_UNPROVED` | A figure's currency differs from what its raw result or provided entry states |

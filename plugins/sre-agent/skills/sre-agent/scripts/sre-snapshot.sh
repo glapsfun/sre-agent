@@ -14,8 +14,8 @@ Kubernetes objects in <namespace> - Deployments, StatefulSets, DaemonSets,
 ConfigMaps, Secrets, Services, HorizontalPodAutoscalers, and
 PodDisruptionBudgets - plus, when [repo-path] is given, its git HEAD SHA and
 working-tree cleanliness. Never touches secret values: Secrets are
-fingerprinted by their data KEY NAMES only, via kubectl's
-`{range $k,$v := .data}{$k}{"\n"}{end}` idiom - $v is bound but never
+fingerprinted by their data KEY NAMES only, via the go-template
+`{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}` - $v is bound but never
 referenced, so no secret value is ever read into this script's output.
 
 `diff` compares two snapshot files and reports every ADDED/REMOVED/CHANGED
@@ -98,8 +98,9 @@ snapshot_secrets() {
   [[ -z "$names" ]] && return 0
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    # shellcheck disable=SC2016  # single quotes are intentional; $k/$v are kubectl jsonpath variables, not shell
-    keys="$(kc get "$name" -n "$ns" -o jsonpath='{range $k,$v := .data}{$k}{"\n"}{end}' 2>/dev/null | sort | paste -sd, - || true)"
+    # go-template, not jsonpath: kubectl's jsonpath has no variables and rejects this range form.
+    # shellcheck disable=SC2016  # single quotes are intentional; $k/$v are template variables, not shell
+    keys="$(kc get "$name" -n "$ns" -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null | sort | paste -sd, - || true)"
     hash="$(printf '%s' "$keys" | sha256)"
     printf 'K8S %s %s\n' "$name" "$hash"
   done <<<"$names"

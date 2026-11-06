@@ -84,12 +84,19 @@ the risk call — this is the same "verify mechanically, don't trust your own
 reading" principle `scripts/sre-snapshot.sh` applies to Phase 3:
 
 ```bash
-scripts/terraform-plan-check.sh <tf-dir> [terraform plan args...]
+scripts/terraform-plan-check.sh --save-plan <plan-file> <tf-dir> [terraform plan args...]
 ```
 
+`--save-plan` keeps the plan that was classified, so step 5 can apply that
+plan and no other. The file holds values in cleartext: put it outside the
+repo (for example in a `mktemp -d` directory) and delete it after the apply,
+or as soon as the option is dropped.
+
 It prints a count of `no-op`/`create`/`update`/`delete`/`delete,create`
-(replace) changes and lists every resource address involved in a delete or
-replace, exiting `1` when any are present. Fold its output into the
+(replace)/`forget` changes and lists every resource address involved in a
+delete, replace, or forget, exiting `1` when any are present. Exit `3` means
+the plan failed or its JSON could not be read: that is a blocker to report,
+never a clean plan. Fold its output into the
 option's Risk field and the ledger — a plan with zero delete/replace
 entries supports Low/Medium risk; any delete or replace bumps the option to
 at least Medium and usually High (per `remediation.md`'s risk
@@ -98,13 +105,18 @@ evidence, not just a summary sentence.
 
 ## 5. Apply and rollback
 
-Apply only after approval, and only the exact plan already classified and
-shown — never re-plan-and-apply blind, since state may have moved between
-the two:
+Apply only after approval, and only the plan file the classifier saved in
+step 4. Never apply a fresh plan: state may have moved since the one the
+user saw.
 
 ```bash
-terraform -chdir=<tf-dir> apply -input=false -no-color <the same plan file, or re-run plan+apply back to back with no intervening change>
+terraform -chdir=<tf-dir> apply -input=false -no-color <plan-file>
 ```
+
+A saved plan applies without `-auto-approve`, and Terraform rejects it as
+stale if state changed after it was made. If that happens, or the plan file
+is gone, go back to step 4: classify a new plan, show it, and get approval
+again.
 
 Rollback is a Git operation, not a Terraform one: revert the HCL commit and
 re-apply, the same way `references/remediation.md`'s GitOps paths revert

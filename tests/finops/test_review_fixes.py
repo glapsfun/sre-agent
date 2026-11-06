@@ -444,3 +444,28 @@ class ReconciliationHeaders(ValidRunCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CalculationCycle(ValidRunCase):
+    """A calculation fed by its own output recomputes to whatever was stored in it."""
+
+    def test_a_calculation_cannot_use_its_own_output(self):
+        def change(run):
+            run["calculations"].append({"id": "C90", "name": "sum", "kind": "calculated", "assumptions": [], "inputs": {"terms": ["C90.total"]}, "outputs": {"total": "123456.78"}})
+            run["gaps"].append({"text": "Hidden spend found", "ref": "C90.total"})
+
+        self.edit(change)
+        self.assertIn("CALC_CYCLE", self.codes())
+
+    def test_two_calculations_cannot_feed_each_other(self):
+        def change(run):
+            for own, other in (("C90", "C91"), ("C91", "C90")):
+                run["calculations"].append({"id": own, "name": "sum", "kind": "calculated", "assumptions": [], "inputs": {"terms": [f"{other}.total"]}, "outputs": {"total": "8000"}})
+            run["gaps"].append({"text": "Hidden spend found", "ref": "C90.total"})
+
+        self.edit(change)
+        failed = {failure.where for failure in validate(self.run_dir) if failure.code == "CALC_CYCLE"}
+        self.assertEqual(failed, {"calculations.C90", "calculations.C91"})
+
+    def test_a_calculation_built_on_another_is_not_a_cycle(self):
+        self.assertNotIn("CALC_CYCLE", self.codes())
