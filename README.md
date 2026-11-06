@@ -202,6 +202,30 @@ Install it alone with `npx skills add glapsfun/sre-agent --skill finops`, or get
 - Buy commitments, resize anything, enable billing exports, or change IAM from a
   FinOps run. FinOps is advisory, and its queries run only under a budget you approve.
 
+## Read-only enforcement
+
+In a Claude Code plugin install, a hook (`hooks/readonly-guard.sh`) checks every command the seven
+investigators run and allows only known read commands. Anything it doesn't recognize is blocked and
+recorded as a gap. It also blocks reads of common credential files.
+
+It stops mistakes and simple prompt injection, but it's not a sandbox. It can't see inside a script it
+allows, a GET request can still carry data out, and it doesn't cover the main conversation, which is where
+approved fixes run. It needs `python3`. Without it, the investigators are blocked and the skill runs their
+playbooks inline.
+
+The hard limit is a read-only identity, so investigate under a context that can't write:
+
+```bash
+kubectl create clusterrolebinding sre-agent-view --clusterrole=view --user=<read-only-user>
+```
+
+`view` leaves out Secrets and nodes, so those parts of the evidence become gaps. Use a read-only role in AWS
+and GCP too. Each remediation option names its target context, so a fix can run under one that can write.
+
+Other install paths get no hook. Codex documents that custom agent instructions don't create a read-only
+sandbox and that subagents inherit the session's sandbox policy, and `npx skills` installs only the skill. On
+those paths, the read-only identity is the only hard limit.
+
 ## Works best with
 
 The orchestrator defers to sibling cloud-native skills for deep work when they
@@ -220,6 +244,7 @@ plugins/sre-agent/
 ├── .codex-plugin/plugin.json     # Codex plugin manifest
 ├── commands/sre-agent.md         # /sre-agent slash command
 ├── commands/finops.md            # /finops slash command
+├── hooks/                        # read-only guard for the 7 investigators
 ├── agents/                       # 7 read-only Claude subagents (generated)
 ├── skills/sre-agent/
 │   ├── SKILL.md                  # the orchestrator: loop, phase gates, safety rules

@@ -3,8 +3,8 @@ description: Investigate an operational problem with the SRE agent — evidence-
 argument-hint: <problem description>
 ---
 
-Invoke the `sre-agent` skill and start an incident investigation at Phase 1
-(Understand and scope) for the following problem, exactly as the user stated
+Invoke the `sre-agent` skill and start an incident investigation at Phase 0
+(Bootstrap context) for the following problem, exactly as the user stated
 it:
 
 $ARGUMENTS

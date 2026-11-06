@@ -9,8 +9,8 @@ Run in order; every item cites a command and compares against the Phase 4
 expected-behavior criteria:
 
 1. **Rollout completed** —
-   `kubectl rollout status deploy/$WORKLOAD -n $NS --timeout=180s`.
-2. **Pods healthy** — `kubectl get pods -n $NS` — all Ready, and restart
+   `kubectl --context "$CTX" rollout status deploy/$WORKLOAD -n $NS --timeout=180s`.
+2. **Pods healthy** — `kubectl --context "$CTX" get pods -n $NS` — all Ready, and restart
    counts **stable across the observation window** (check twice, start and
    end).
 3. **Expected-behavior criteria** — re-run each criterion's query exactly as
@@ -20,7 +20,7 @@ expected-behavior criteria:
    post-change window must show nothing that wasn't present before.
 5. **Alerts resolved** — Alertmanager API shows the incident's alerts gone
    (or explicitly still pending with a reason).
-6. **GitOps in sync** — `flux get kustomizations -A` shows the fix revision
+6. **GitOps in sync** — `flux --context "$CTX" get kustomizations -A` shows the fix revision
    applied / `argocd app get <app>` shows Synced + Healthy, so the fix won't
    be reverted.
 

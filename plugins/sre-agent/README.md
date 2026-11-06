@@ -110,6 +110,7 @@ Install it alone with `npx skills add glapsfun/sre-agent --skill finops`, or get
 | `skills/sre-agent/scripts/` | Read-only helpers: `sre-env-discovery.sh` (tools, cluster, GitOps, cloud), `sre-obs-discovery.sh` (Prometheus/Alertmanager/Grafana/Loki/Mimir/Tempo/Jaeger/Elasticsearch endpoints, service-mesh and k6 detection), `sre-evidence.sh <ns> <workload>` (one-shot evidence pack), `sre-snapshot.sh` (Phase 3 mutation verification: snapshot/diff spec-hash fingerprints around each wave's dispatch), `sre-gh-discovery.sh` (read-only GitHub discovery/search via gh: repo/timeline/incidents/code subcommands), `terraform-plan-check.sh <tf-dir>` (Phase 5/6 Terraform plan classification: no-op/create/update/delete/replace counts, flags any destroy/replace), `pulumi-preview-check.sh <stack-dir>` (Phase 5/6 Pulumi preview classification: same/create/update/delete/replace counts, flags any destroy/replace), `crossplane-status-check.sh [TYPE[.VERSION][.GROUP][/NAME]]` (Phase 2-6 Crossplane evidence and verification: classifies Provider/Managed/Composite Resource Installed/Healthy/Ready/Synced conditions), `install-codex-agents.sh` (Codex subagent install) |
 | `commands/sre-agent.md` | The `/sre-agent <problem>` entry point (Claude Code) |
 | `commands/finops.md` | The `/finops <question>` entry point (Claude Code) |
+| `hooks/` | The read-only guard for the seven investigator subagents (Claude Code) |
 | `skills/finops/SKILL.md` | The FinOps workflow: scope, discovery, budget approval, evidence, assurance, math, and report |
 | `skills/finops/references/` | AWS and GCP billing, Kubernetes cost, assurance, calculations, report fields, telemetry, troubleshooting, and which facts are confirmed |
 | `skills/finops/sql/` | Prepared billing queries for CUR 2.0, legacy CUR, and the GCP export, exercised on fixtures in DuckDB |
@@ -134,6 +135,30 @@ Install it alone with `npx skills add glapsfun/sre-agent --skill finops`, or get
 
 FinOps runs are advisory. They never buy commitments, resize anything, enable billing
 exports, or change IAM, and their queries run only under a budget you approve.
+
+## Read-only enforcement
+
+In a Claude Code plugin install, a hook (`hooks/readonly-guard.sh`) checks every command the seven
+investigators run and allows only known read commands. Anything it doesn't recognize is blocked and
+recorded as a gap. It also blocks reads of common credential files.
+
+It stops mistakes and simple prompt injection, but it's not a sandbox. It can't see inside a script it
+allows, a GET request can still carry data out, and it doesn't cover the main conversation, which is where
+approved fixes run. It needs `python3`. Without it, the investigators are blocked and the skill runs their
+playbooks inline.
+
+The hard limit is a read-only identity, so investigate under a context that can't write:
+
+```bash
+kubectl create clusterrolebinding sre-agent-view --clusterrole=view --user=<read-only-user>
+```
+
+`view` leaves out Secrets and nodes, so those parts of the evidence become gaps. Use a read-only role in AWS
+and GCP too. Each remediation option names its target context, so a fix can run under one that can write.
+
+Other install paths get no hook. Codex documents that custom agent instructions don't create a read-only
+sandbox and that subagents inherit the session's sandbox policy, and `npx skills` installs only the skill. On
+those paths, the read-only identity is the only hard limit.
 
 ## Degraded environments
 

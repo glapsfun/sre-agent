@@ -60,6 +60,12 @@ fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# SRE_KUBE_CONTEXT pins every kubectl call here to one cluster, so switching the
+# current context in another terminal can't redirect this script.
+if [[ -n "${SRE_KUBE_CONTEXT:-}" ]] && command -v kubectl >/dev/null 2>&1; then
+  kubectl() { command kubectl --context "$SRE_KUBE_CONTEXT" "$@"; }
+fi
+
 if ! have kubectl; then
   echo "GAP: kubectl not found on PATH - install it or run this against a cluster where it's available" >&2
   exit 3
@@ -171,7 +177,7 @@ resource_unhealthy=""
 
 if [[ -n "$resource_ref" ]] && have crossplane; then
   trace_json="$work_dir/trace.json"
-  if ! crossplane resource trace "$resource_ref" -o json >"$trace_json" 2>"$work_dir/trace.err"; then
+  if ! crossplane resource trace ${SRE_KUBE_CONTEXT:+--context "$SRE_KUBE_CONTEXT"} "$resource_ref" -o json >"$trace_json" 2>"$work_dir/trace.err"; then
     echo "GAP: 'crossplane resource trace $resource_ref' failed:" >&2
     cat "$work_dir/trace.err" >&2
     exit 3

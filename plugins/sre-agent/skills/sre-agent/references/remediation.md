@@ -10,6 +10,7 @@ Fill this block for every option presented:
 
 ```markdown
 ### Option <N>: <name>
+- **Target:** <the kube context these commands run against, plus the cloud account or project if any>
 - **Description:** <what and why it addresses the ranked root cause>
 - **Steps:** <numbered, exact commands or file edits, including the dry-run step>
 - **Risk:** Low | Medium | High — <one-line justification>
@@ -17,6 +18,10 @@ Fill this block for every option presented:
 - **Expected impact:** <what changes for users/workloads during and after>
 - **Rollback:** <exact commands/steps that restore the prior state; verify with what evidence>
 ```
+
+`$CTX` in the commands below is the option's target. It's normally the pinned
+context. Name a different one only when the investigation ran under a read-only
+identity and the fix needs one that can write.
 
 ## Risk classification
 
@@ -37,30 +42,30 @@ Adapt these to the evidence; each is a complete Steps section.
 **Restart** (stuck process, leaked state, config re-read):
 
 ```bash
-kubectl rollout restart deploy/$WORKLOAD -n $NS
-kubectl rollout status deploy/$WORKLOAD -n $NS --timeout=180s
+kubectl --context "$CTX" rollout restart deploy/$WORKLOAD -n $NS
+kubectl --context "$CTX" rollout status deploy/$WORKLOAD -n $NS --timeout=180s
 ```
 
 Rollback: none needed — restart is idempotent; if pods fail to come back the
-prior ReplicaSet is still available via `kubectl rollout undo`.
+prior ReplicaSet is still available via `kubectl --context "$CTX" rollout undo`.
 
 **Rollback a deployment** (issue started after a deploy):
 
 ```bash
-kubectl rollout history deploy/$WORKLOAD -n $NS          # confirm target revision
-kubectl rollout undo deploy/$WORKLOAD -n $NS             # or --to-revision=<n>
-kubectl rollout status deploy/$WORKLOAD -n $NS --timeout=180s
+kubectl --context "$CTX" rollout history deploy/$WORKLOAD -n $NS          # confirm target revision
+kubectl --context "$CTX" rollout undo deploy/$WORKLOAD -n $NS             # or --to-revision=<n>
+kubectl --context "$CTX" rollout status deploy/$WORKLOAD -n $NS --timeout=180s
 ```
 
-Helm-managed: `helm history $RELEASE -n $NS` then
-`helm rollback $RELEASE <rev> -n $NS`. GitOps-managed: use the GitOps path
+Helm-managed: `helm --kube-context "$CTX" history $RELEASE -n $NS` then
+`helm --kube-context "$CTX" rollback $RELEASE <rev> -n $NS`. GitOps-managed: use the GitOps path
 below instead — a direct rollback will be reverted at the next sync.
 
 **Resource-limit change** (OOMKilled with evidence that the limit is
 genuinely too low):
 
 ```bash
-kubectl patch deploy/$WORKLOAD -n $NS --dry-run=server -o yaml --type=strategic \
+kubectl --context "$CTX" patch deploy/$WORKLOAD -n $NS --dry-run=server -o yaml --type=strategic \
   -p '{"spec":{"template":{"spec":{"containers":[{"name":"$CONTAINER","resources":{"limits":{"memory":"1Gi"}}}]}}}}'
 # review the server dry-run output, then re-run without --dry-run=server
 ```
@@ -93,8 +98,8 @@ Flux-managed:
 
 ```bash
 # after the fix commit lands in the source repo:
-flux reconcile kustomization <name> --with-source
-flux get kustomizations -A          # verify Applied revision
+flux --context "$CTX" reconcile kustomization <name> --with-source
+flux --context "$CTX" get kustomizations -A          # verify Applied revision
 ```
 
 Argo-managed:
@@ -107,10 +112,10 @@ argocd app get <app>                # verify Synced/Healthy
 
 Emergency direct edit (only with explicit approval, only when waiting for
 the Git path is not acceptable): suspend reconciliation first —
-`flux suspend kustomization <name>` or `argocd app set <app> --sync-policy
+`flux --context "$CTX" suspend kustomization <name>` or `argocd app set <app> --sync-policy
 none` — apply the manual change, and record in the ledger that reconciliation
 is suspended and MUST be re-enabled after the proper fix lands
-(`flux resume kustomization <name>` / `argocd app set <app> --sync-policy
+(`flux --context "$CTX" resume kustomization <name>` / `argocd app set <app> --sync-policy
 automated`).
 
 ## AWS/EKS infrastructure changes

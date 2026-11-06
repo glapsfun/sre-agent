@@ -10,6 +10,7 @@ Read-only observability endpoint discovery. Searches the given namespaces
 Tempo, Jaeger, and Elasticsearch/OpenSearch services, detects service meshes
 (Istio/Linkerd) and k6, and lists observability-related ingress hosts.
 Prints endpoints and port-forward commands only — never secret values.
+Set SRE_KUBE_CONTEXT to pin every call to one context.
 EOF
 }
 
@@ -18,7 +19,13 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if ! command -v kubectl >/dev/null 2>&1 || ! kubectl config current-context >/dev/null 2>&1; then
+# SRE_KUBE_CONTEXT pins every kubectl call here to one cluster, so switching the
+# current context in another terminal can't redirect this script.
+if [[ -n "${SRE_KUBE_CONTEXT:-}" ]] && command -v kubectl >/dev/null 2>&1; then
+  kubectl() { command kubectl --context "$SRE_KUBE_CONTEXT" "$@"; }
+fi
+
+if ! command -v kubectl >/dev/null 2>&1 || { [[ -z "${SRE_KUBE_CONTEXT:-}" ]] && ! kubectl config current-context >/dev/null 2>&1; }; then
   echo "No kubectl or no configured context — cannot discover in-cluster endpoints."
   echo "Ask the user for Prometheus/Grafana/Loki URLs directly."
   exit 0
@@ -71,7 +78,7 @@ find_services() {
     # from the default (e.g. Grafana on 80).
     svc_port="${ports%%,*}"
     printf 'svc %s/%s (ports: %s)\n' "$ns" "$name" "$ports"
-    printf '  port-forward: kubectl port-forward -n %s svc/%s %s:%s\n' "$ns" "$name" "$port" "${svc_port:-$port}"
+    printf '  port-forward: kubectl %sport-forward -n %s svc/%s %s:%s\n' "${SRE_KUBE_CONTEXT:+--context $SRE_KUBE_CONTEXT }" "$ns" "$name" "$port" "${svc_port:-$port}"
   done <<<"$found"
   printf 'probe readiness (after port-forward): curl -fsS localhost:%s%s\n' "$port" "$probe_path"
 }

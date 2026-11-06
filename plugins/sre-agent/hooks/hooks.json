@@ -1,0 +1,16 @@
+{
+  "description": "Blocks commands that could change anything, and credential reads, for the sre-* investigator subagents",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/readonly-guard.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
