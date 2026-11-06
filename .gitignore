@@ -12,6 +12,9 @@
 .agents/*
 .docs
 
+# Python bytecode from running the skill's scripts and tests
+__pycache__/
+
 # Secrets / local env
 .env
 .envrc

@@ -9,6 +9,7 @@ SHFMT_VERSION="v3.13.1"
 ACTIONLINT_VERSION="v1.7.7"
 GITLEAKS_VERSION="v8.21.2"
 SHELLCHECK_VERSION="v0.11.0"
+DUCKDB_VERSION="v2.0.0"
 
 usage() {
   cat <<'EOF'
@@ -16,12 +17,13 @@ Usage: scripts/bootstrap.sh [--ci]
 
 Install developer tooling used by the scripts/ check suite:
   shellcheck shfmt yamllint actionlint prettier markdownlint-cli2
-  gitleaks pre-commit (and git-cliff on macOS for local release dry-runs).
+  gitleaks pre-commit duckdb (and git-cliff on macOS for local release dry-runs).
 
 Version-sensitive tools (shfmt, actionlint, gitleaks) are installed via
 `go install` at pinned versions on every platform so local output matches CI.
 On CI, shellcheck is installed from the pinned upstream release (the apt
-package lags and enables different default checks, e.g. SC2015).
+package lags and enables different default checks, e.g. SC2015). DuckDB is
+installed from its pinned release everywhere; only the finops SQL tests use it.
 
 Options:
   --ci        Non-interactive install for Linux CI runners (apt/go/npm/pip).
@@ -41,6 +43,22 @@ install_go_tools() {
   go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
 }
 
+# The finops SQL tests compare exact totals, so local runs and CI use one engine
+# version. Test-only: the shipped skill never needs DuckDB at runtime.
+install_duckdb_pinned() {
+  local asset tmp
+  case "$(uname -s)" in
+    Darwin) asset="duckdb-cli-osx-universal.tar.gz" ;;
+    *) asset="duckdb-cli-linux-amd64.tar.gz" ;;
+  esac
+  tmp="$(mktemp -d)"
+  curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/${asset}" | tar -xz -C "$tmp"
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 "$tmp/duckdb" "$HOME/.local/bin/duckdb"
+  rm -rf "$tmp"
+  "$HOME/.local/bin/duckdb" --version
+}
+
 bootstrap_macos() {
   require_tool brew "Install Homebrew from https://brew.sh"
   # Non-pinned tools via brew; version-sensitive ones via go (pinned) below.
@@ -52,6 +70,11 @@ bootstrap_macos() {
   gobin="$(go env GOPATH)/bin"
   if [[ ":$PATH:" != *":$gobin:"* ]]; then
     log_warn "add '$gobin' to your PATH (and ahead of Homebrew) so pinned tools win"
+  fi
+
+  install_duckdb_pinned
+  if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    log_warn "add '$HOME/.local/bin' to your PATH so the finops SQL tests find duckdb"
   fi
 }
 
@@ -74,6 +97,7 @@ bootstrap_ci() {
 
   install_shellcheck_pinned
   install_go_tools
+  install_duckdb_pinned
 
   python3 -m pip install --user --quiet yamllint pre-commit
   npm install -g --no-fund --no-audit prettier markdownlint-cli2
