@@ -284,6 +284,9 @@ func TestBoundedInventoriesAndK6FirstLine(t *testing.T) {
 	if len(r.Probes["env"].Gaps) == 0 || len(r.Probes["obs"].Gaps) < 2 {
 		t.Fatal("omissions not disclosed")
 	}
+	if r.Probes["obs"].Findings.Obs.EndpointInventoryComplete {
+		t.Fatal("omitted endpoints reported as a complete inventory")
+	}
 	if r.Probes["obs"].Findings.Obs.K6Version != "k6 v1.0.0" {
 		t.Fatal("k6 version included unrelated output")
 	}
@@ -486,5 +489,32 @@ func TestAWSExitMessageWithoutTypedStatusIsStillError(t *testing.T) {
 	}
 	if report.Probes["aws"].Status != Error {
 		t.Fatal("inferred missing region from error text")
+	}
+}
+
+func TestEndpointInventoryCompleteness(t *testing.T) {
+	for _, tc := range []struct {
+		name, services string
+		complete       bool
+	}{
+		{"empty", `{"items":[]}`, true},
+		{"valid", `{"items":[{"metadata":{"name":"prometheus","namespace":"monitoring"},"spec":{"ports":[{"port":9090}]}}]}`, true},
+		{"rejected port", `{"items":[{"metadata":{"name":"prometheus","namespace":"monitoring"},"spec":{"ports":[{"port":0}]}}]}`, false},
+		{"missing namespace", `{"items":[{"metadata":{"name":"prometheus"},"spec":{"ports":[{"port":9090}]}}]}`, false},
+		{"missing name", `{"items":[{"metadata":{"namespace":"monitoring"},"spec":{"ports":[{"port":9090}]}}]}`, false},
+		{"malformed", `{}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanEnv(t)
+			fixtures := clusterFixtures()
+			fixtures["kubectl --context original get services --all-namespaces -o json"] = jsonResult(tc.services)
+			report, err := fixtureService(&fixtureRunner{fixtures: fixtures}).Discover(context.Background(), Options{Only: []string{"obs"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Probes["obs"].Findings.Obs.EndpointInventoryComplete != tc.complete {
+				t.Fatalf("inventory: %+v", report.Probes["obs"])
+			}
+		})
 	}
 }

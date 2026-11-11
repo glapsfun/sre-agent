@@ -14,6 +14,9 @@ type Kubernetes struct {
 	context string
 }
 
+// Context returns the selected target so a collaborating service can share it.
+func (k *Kubernetes) Context() string { return k.context }
+
 func NewKubernetes(ctx context.Context, runner Runner, explicit string) (*Kubernetes, error) {
 	selected := strings.TrimSpace(explicit)
 	if selected == "" {

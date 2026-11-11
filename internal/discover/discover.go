@@ -149,6 +149,9 @@ func (s Service) Discover(ctx context.Context, opts Options) (Report, error) {
 				env.Namespaces = limit(&p, "namespaces", env.Namespaces, 100)
 			}
 			if obs := p.result.Findings.Obs; obs != nil {
+				if len(obs.Endpoints) > 20 {
+					obs.EndpointInventoryComplete = false
+				}
 				obs.Endpoints = limit(&p, "observability endpoints", obs.Endpoints, 20)
 				obs.Ingresses = limit(&p, "observability ingresses", obs.Ingresses, 20)
 			}

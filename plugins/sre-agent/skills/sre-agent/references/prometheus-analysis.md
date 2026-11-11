@@ -1,5 +1,70 @@
 # Prometheus Analysis
 
+For compact range summaries, use the CLI when available:
+
+```bash
+sre prom query 'up{namespace="payments"}' --context production --range 1h --step 30s --top 20
+sre prom query 'up' --url http://localhost:9090 --format text
+```
+
+Defaults: range `1h`, step `30s`, top `20`, and `--timeout 30s` for the complete
+operation. CLI durations and top must be positive. The range ends at the
+current time, rounded down to a millisecond. The explicit URL is a base URL;
+deployment prefixes such as `https://metrics.example.com/prometheus` are
+preserved when appending `/api/v1/query_range`.
+
+Without `--url`, context precedence is `--context`, `SRE_KUBE_CONTEXT`, then
+one `kubectl config current-context` read. The selected context is pinned for
+discovery and the authenticated Kubernetes service-proxy query. Automatic
+selection requires a complete service-endpoint inventory and exactly one
+Prometheus service. Exposed port 9090 wins; otherwise the service must expose
+one distinct port. No port-forward is started, and readiness URLs from
+discovery are forwarding hints, not verified listeners. Missing/ambiguous
+endpoints, incomplete inventory, skipped cluster discovery, and proxy access
+or transport failures require `--url`. Use an explicit URL for TLS-only
+services or services with a custom API prefix.
+
+JSON and text reports list each selected series' redacted labels and finite
+first, last, minimum, maximum, and arithmetic mean. The first and last are the
+first and last finite samples. NaNs and positive/negative infinities are
+counted separately and excluded from all numeric statistics. All-nonfinite
+and empty series have null statistics. Missing steps include both window
+edges and gaps inside the evaluation grid; absent data is never zero.
+Duplicate, unordered, off-grid, or out-of-window samples fail the query.
+
+A change point minimizes the sum of squared errors of two constant levels
+over the finite samples, with at least two finite samples on each side. The
+split needs at least 20% less error than the single-level fit and must exceed
+a numerical noise floor of `1e-12 * finite sample count` after power-of-two
+normalization. Tied splits select the earliest time. The reported time is the
+first finite sample of the second segment. This is a descriptive heuristic:
+it can identify gradual trends and can span missing data. It is not a
+statistical significance test, an alert threshold, or proof of cause.
+
+Ranking uses the absolute difference between the two fitted levels when a
+change exists, otherwise the absolute finite last-minus-first value. Canonical
+redacted-label JSON breaks ties, with summary JSON breaking any remaining
+redaction collision. `omitted_series` counts every series beyond `--top`.
+Raw samples are never written to storage. Labels and info annotations appear
+inside fresh external-data markers; API errors and warnings are redacted and
+marked too. Warnings fail the query even with HTTP 200; info annotations are
+retained. No failed query returns a successful empty or partial report.
+
+Responses are limited to 8 MiB and 65,536 JSON structural tokens, with explicit
+errors on excess. Numeric sample timestamps support exact nanosecond Unix
+times within the int64 nanosecond range. Native histogram samples are rejected;
+use a float conversion query such as `histogram_sum()`, `histogram_count()`, or
+`histogram_avg()` before summarizing them.
+
+The [Prometheus HTTP API](https://prometheus.io/docs/prometheus/latest/querying/api/)
+defines matrix responses and query-range parameters. The
+[querying basics](https://prometheus.io/docs/prometheus/latest/querying/basics/)
+describe equally spaced range evaluations and float/native histogram samples.
+The [Kubernetes service-proxy documentation](https://kubernetes.io/docs/tasks/access-application-cluster/access-cluster-services/)
+describes authenticated service access through the API server.
+
+## Curl fallback
+
 How to query Prometheus during an investigation. Reach the API through the
 port-forward from `discovery.md` (`kubectl port-forward -n <ns> svc/<name>
 9090:9090`), then query with `curl -fsS`:
