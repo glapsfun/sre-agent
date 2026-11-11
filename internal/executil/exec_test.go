@@ -3,6 +3,7 @@ package executil
 import (
 	"context"
 	"errors"
+	"github.com/glapsfun/sre-agent/internal/safety"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,5 +116,88 @@ func TestMissingContextFails(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if _, err := NewKubernetes(context.Background(), Runner{}, ""); err == nil {
 		t.Fatal("silently accepted unavailable context")
+	}
+}
+
+func TestDeadlineIncludesOutputRedaction(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "response.json")
+	data := `{"padding":"` + strings.Repeat("x", 4*1024*1024) + `","token":"sensitive-value"}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result := (Runner{Timeout: 50 * time.Millisecond}).Run(context.Background(), "cat", path)
+	elapsed := time.Since(start)
+	t.Logf("4MiB actual executor response, 50ms deadline: %s", elapsed)
+	if elapsed > 300*time.Millisecond {
+		t.Fatal("executor redaction exceeded overall deadline")
+	}
+	if !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("missing timeout: %v", result.Err)
+	}
+	if result.Stdout != "" || result.Stderr != "" {
+		t.Fatal("returned incomplete redaction output")
+	}
+}
+
+func TestOversizedOutputFailsWithoutTruncatedEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "response.json")
+	data := `{"padding":"` + strings.Repeat("x", safety.MaxResponseBytes) + `"}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result := (Runner{Timeout: time.Second}).Run(context.Background(), "sh", "-c", `cat "$1"; sleep 10`, "test", path)
+	if time.Since(start) > 300*time.Millisecond {
+		t.Fatal("oversized output did not stop the producer")
+	}
+	if !errors.Is(result.Err, safety.ErrResponseTooLarge) || result.Stdout != "" {
+		t.Fatalf("accepted truncated output: %v", result.Err)
+	}
+}
+
+func TestStructuredOutputDeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "response.json")
+	input := "[" + strings.Repeat(`{"x":0},`, 900000-1) + `{"x":0}]`
+	if err := os.WriteFile(path, []byte(input), 0600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result := (Runner{Timeout: 100 * time.Millisecond}).Run(context.Background(), "cat", path)
+	elapsed := time.Since(start)
+	t.Logf("dense executor output: elapsed=%s err=%v", elapsed, result.Err)
+	if elapsed > 350*time.Millisecond {
+		t.Fatal("dense output redaction exceeded deadline")
+	}
+	if result.Err == nil || result.Stdout != "" {
+		t.Fatal("rejected structured output produced evidence")
+	}
+}
+
+func TestProcessFailureExitMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, command string
+		args          []string
+		wantCode      bool
+	}{
+		{"normal exit", "sh", []string{"-c", "exit 1"}, true},
+		{"launch failure", "/missing/discovery-executable", nil, false},
+		{"signal", "sh", []string{"-c", "kill -TERM $$"}, false},
+		{"timeout", "sh", []string{"-c", "sleep 1"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := (Runner{Timeout: 30 * time.Millisecond}).Run(context.Background(), tc.command, tc.args...)
+			if result.Err == nil {
+				t.Fatal("missing command failure")
+			}
+			if tc.wantCode {
+				if result.ExitCode == nil || *result.ExitCode != 1 {
+					t.Fatalf("lost process exit: %+v", result)
+				}
+			} else if result.ExitCode != nil {
+				t.Fatalf("non-exit failure has exit status: %+v", result)
+			}
+		})
 	}
 }

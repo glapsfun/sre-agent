@@ -1,10 +1,14 @@
 package safety
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRedactedJSONRemainsParseable(t *testing.T) {
@@ -94,5 +98,117 @@ func TestExternalMarkers(t *testing.T) {
 	}
 	if strings.Contains(b.Wrap("label", "data"), match[1]) {
 		t.Fatal("marker reused between runs")
+	}
+}
+
+func TestContextRedactionPreservesFoundationRules(t *testing.T) {
+	r := NewRedactor("alpha", "beta", "123456", "true", "null", "literal-secret")
+	for _, input := range []string{
+		`{"alpha":"first","beta":"second","[REDACTED]":"original","[REDACTED]#2":"reserved","number":123456,"boolean":true,"empty":null,"large":9876543210987654321,"safe":false}`,
+		`{"token":"secret-value","nested":[{"url":"https://user:password@example.com"}],"count":2}`,
+		"-----BEGIN PRIVATE KEY-----\nprivate-content\n-----END PRIVATE KEY-----",
+		"Authorization: Bearer abc.def password='hunter2' literal-secret",
+		`{"malformed":"password=hunter2"`,
+		`{"one":1} {"token":"secret"}`,
+		`{"text":"` + strings.Repeat("€", 2000) + `<&>\n\""}`,
+	} {
+		got, err := r.RedactContext(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := r.Redact(input); got != want {
+			t.Fatalf("changed foundation redaction:\ngot %s\nwant %s", got, want)
+		}
+	}
+}
+
+func TestContextRedactionAndDecodeRejectCancellationAndOversize(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if text, err := NewRedactor().RedactContext(ctx, `{"token":"secret"}`); !errors.Is(err, context.Canceled) || text != "" {
+		t.Fatalf("canceled redaction: %q %v", text, err)
+	}
+	var dest any
+	if err := DecodeJSON(ctx, `{"ok":true}`, &dest); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled decode: %v", err)
+	}
+	huge := strings.Repeat("x", MaxResponseBytes+1)
+	if text, err := NewRedactor().RedactContext(context.Background(), huge); !errors.Is(err, ErrResponseTooLarge) || text != "" {
+		t.Fatalf("oversized redaction: %v", err)
+	}
+	if err := DecodeJSON(context.Background(), huge, &dest); !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("oversized decode: %v", err)
+	}
+}
+
+func TestContextRedactionPreservesLiteralSecretBytes(t *testing.T) {
+	secret := "literal-\xff-value"
+	got, err := NewRedactor(secret).RedactContext(context.Background(), "prefix "+secret+" suffix")
+	if err != nil || got != "prefix [REDACTED] suffix" {
+		t.Fatalf("literal secret changed: %q %v", got, err)
+	}
+}
+
+func TestStructuredDecodeDeadlineRejectsExcessiveWork(t *testing.T) {
+	input := "[" + strings.Repeat(`{"x":0},`, 900000-1) + `{"x":0}]`
+	for _, redact := range []bool{false, true} {
+		t.Run(fmt.Sprint("redact=", redact), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			var value any
+			start := time.Now()
+			var err error
+			if redact {
+				var output string
+				output, err = NewRedactor().RedactContext(ctx, input)
+				if output != "" {
+					t.Fatal("rejected response returned evidence")
+				}
+			} else {
+				err = DecodeJSON(ctx, input, &value)
+			}
+			elapsed := time.Since(start)
+			t.Logf("input_bytes=%d budget=100ms elapsed=%s err=%v", len(input), elapsed, err)
+			if elapsed > 350*time.Millisecond {
+				t.Fatal("structured conversion exceeded deadline")
+			}
+			if err == nil || value != nil {
+				t.Fatal("over-complex response produced partial evidence")
+			}
+		})
+	}
+}
+
+func TestAcceptedDenseJSONConversion(t *testing.T) {
+	input := "[" + strings.Repeat(`{"x":0},`, 16000-1) + `{"x":0}]`
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	var value []struct {
+		X int `json:"x"`
+	}
+	start := time.Now()
+	err := DecodeJSON(ctx, input, &value)
+	t.Logf("accepted 16000 objects: bytes=%d elapsed=%s err=%v", len(input), time.Since(start), err)
+	if err != nil || len(value) != 16000 {
+		t.Fatalf("bounded dense response rejected: len=%d err=%v", len(value), err)
+	}
+}
+
+func TestJSONWorkBoundPreservesQuotedDataAndDestination(t *testing.T) {
+	text := strings.Repeat(`"[,:]{}\`, 20000)
+	input, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := DecodeJSON(context.Background(), string(input), &got); err != nil || got["text"] != text {
+		t.Fatalf("quoted punctuation affected structural bound: %v", err)
+	}
+	value := struct {
+		X int `json:"x"`
+	}{X: 7}
+	excessive := "[" + strings.Repeat(`{"x":0},`, 20000-1) + `{"x":0}]`
+	if err := DecodeJSON(context.Background(), excessive, &value); !errors.Is(err, ErrResponseComplexity) || value.X != 7 {
+		t.Fatalf("rejected evidence changed destination: %+v %v", value, err)
 	}
 }

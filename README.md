@@ -159,6 +159,25 @@ your repo under `docs/sre-incidents/`.
 See the [plugin README](plugins/sre-agent/README.md) for the full usage guide,
 the component breakdown, and the degraded-environment behavior.
 
+## Discovery CLI
+
+Run read-only environment discovery with an installed binary, or from this
+source checkout with Go 1.26 or newer:
+
+```bash
+sre discover --context production --only env,obs --timeout 10s
+go run ./cmd/sre discover --context production
+```
+
+The default runs environment, observability, AWS, GCP, and GitHub probes in
+parallel with a 10-second deadline per probe. JSON retains successful findings
+and explicit gaps when another probe fails. `--format text` pretty prints the
+report. `SRE_SKIP_CLUSTER=true` skips all subprocesses and reports local tools.
+See [discovery](plugins/sre-agent/skills/sre-agent/references/discovery.md) for
+fields, limits, context selection, and the script fallback when the binary or
+release launcher is unavailable. Existing cloud cluster/search scripts remain
+available for later investigation phases.
+
 ## FinOps
 
 The plugin also ships a `finops` skill for cost questions on AWS, GCP, and Kubernetes. It's separate
