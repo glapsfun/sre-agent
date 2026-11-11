@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/glapsfun/sre-agent/internal/executil"
+	"github.com/glapsfun/sre-agent/internal/safety"
 )
 
 type fixtureRunner struct {
@@ -349,5 +350,62 @@ func TestAllObservabilityComponentsAndGCPProjects(t *testing.T) {
 	g := r.Probes["gcloud"].Findings.GCloud
 	if g.Region != "europe-west1" || len(g.Projects) != 1 || g.Projects[0].ID != "my-proj" || g.Projects[0].Name != "My project" || g.Projects[0].State != "ACTIVE" {
 		t.Fatalf("GCP parity: %+v", g)
+	}
+}
+
+func TestOverallDeadlineIncludesLargeJSONProcessing(t *testing.T) {
+	cleanEnv(t)
+	fixtures := clusterFixtures()
+	fixtures["kubectl --context original get nodes -o json"] = jsonResult(`{"items":[{"metadata":{"annotations":{"padding":"` + strings.Repeat("x", 4*1024*1024) + `"},"labels":{"cloud.google.com/gke-nodepool":"pool"}},"spec":{"providerID":"gce://project/zone/node"}}]}`)
+	fixtures["gh repo view --json nameWithOwner,url"] = cloudFixtures()["gh repo view --json nameWithOwner,url"]
+	start := time.Now()
+	report, err := fixtureService(&fixtureRunner{fixtures: fixtures}, "az").Discover(context.Background(), Options{Only: []string{"env", "github"}, Context: "original", Timeout: 50 * time.Millisecond})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("4MiB node response, 50ms deadline: %s", elapsed)
+	if elapsed > 300*time.Millisecond {
+		t.Fatal("postprocessing exceeded overall deadline")
+	}
+	env := report.Probes["env"]
+	if env.Status != Timeout || env.Findings.Env.ServerVersion != "v1.33.0" || report.Probes["github"].Findings.GitHub.NameWithOwner != "owner/repo" {
+		t.Fatalf("lost partial or peer results: %+v", report)
+	}
+	if env.Findings.Env.GKE != nil {
+		t.Fatal("incomplete parsing established GKE absence")
+	}
+}
+
+func TestOverallDeadlineIncludesScalarRedaction(t *testing.T) {
+	cleanEnv(t)
+	fixtures := clusterFixtures()
+	fixtures["k6 version"] = jsonResult(strings.Repeat("x", 4*1024*1024))
+	start := time.Now()
+	report, err := fixtureService(&fixtureRunner{fixtures: fixtures}).Discover(context.Background(), Options{Only: []string{"obs"}, Context: "original", Timeout: 50 * time.Millisecond})
+	elapsed := time.Since(start)
+	t.Logf("4MiB scalar response, 50ms deadline: %s", elapsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatal("scalar postprocessing exceeded overall deadline")
+	}
+	p := report.Probes["obs"]
+	if p.Status != Timeout || len(p.Findings.Obs.Endpoints) != 2 || p.Findings.Obs.K6Version != "" {
+		t.Fatal("lost prior endpoints or returned unfinished scalar")
+	}
+}
+
+func TestInjectedRunnerRejectsOversizedDiagnostics(t *testing.T) {
+	cleanEnv(t)
+	f := &fixtureRunner{fixtures: map[string]executil.Result{"gh repo view --json nameWithOwner,url": {Err: errors.New("failed"), Stderr: strings.Repeat("x", safety.MaxResponseBytes+1)}}}
+	report, err := fixtureService(f).Discover(context.Background(), Options{Only: []string{"github"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := report.Probes["github"]
+	if p.Status != Error || !strings.Contains(strings.Join(p.Gaps, " "), "8 MiB limit") {
+		t.Fatalf("unbounded injected diagnostics: %+v", p)
 	}
 }

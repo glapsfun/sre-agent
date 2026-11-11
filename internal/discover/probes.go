@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/glapsfun/sre-agent/internal/executil"
 	"github.com/glapsfun/sre-agent/internal/safety"
 )
 
@@ -115,7 +116,14 @@ func has(items []resource, name string) bool {
 	return false
 }
 func boolean(v bool) *bool { return &v }
-func safe(s string) string { return safety.NewRedactor().Redact(s) }
+func (p *probe) safe(s string) string {
+	value, err := safety.NewRedactor().RedactContext(p.ctx, s)
+	if err != nil {
+		p.check("external scalar", executil.Result{Err: err})
+		return ""
+	}
+	return value
+}
 
 func (p *probe) environment() {
 	e := &Environment{Tools: map[string]bool{}}
@@ -125,7 +133,7 @@ func (p *probe) environment() {
 	}
 	ctx := p.cluster()
 	if ctx != "" {
-		e.Context = safe(ctx)
+		e.Context = p.safe(ctx)
 		var version struct {
 			ClientVersion struct {
 				GitVersion string `json:"gitVersion"`
@@ -151,6 +159,9 @@ func (p *probe) environment() {
 		if nodesOK {
 			seen := map[string]bool{}
 			for _, node := range nodes {
+				if p.ctx.Err() != nil {
+					return
+				}
 				id := node.Spec.ProviderID
 				if id != "" && !seen[id] {
 					if len(e.ProviderIDs) < 20 {
@@ -208,9 +219,12 @@ func (p *probe) observability() {
 	if ctx == "" {
 		return
 	}
-	o.Context = safe(ctx)
+	o.Context = p.safe(ctx)
 	if services, ok := p.list(ctx, "services", "--all-namespaces"); ok {
 		for _, svc := range services {
+			if p.ctx.Err() != nil {
+				return
+			}
 			name := strings.ToLower(svc.Metadata.Name)
 			for _, c := range components {
 				matches := strings.Contains(name, c.name)
@@ -232,7 +246,7 @@ func (p *probe) observability() {
 					continue
 				}
 				o.Endpoints = append(o.Endpoints, Endpoint{Component: c.name, Namespace: svc.Metadata.Namespace, Service: svc.Metadata.Name, Ports: ports,
-					PortForward:  []string{"kubectl", "--context", safe(ctx), "port-forward", "-n", svc.Metadata.Namespace, "svc/" + svc.Metadata.Name, fmt.Sprintf("%d:%d", c.port, ports[0])},
+					PortForward:  []string{"kubectl", "--context", o.Context, "port-forward", "-n", svc.Metadata.Namespace, "svc/" + svc.Metadata.Name, fmt.Sprintf("%d:%d", c.port, ports[0])},
 					ReadinessURL: fmt.Sprintf("http://localhost:%d%s", c.port, c.path)})
 			}
 		}
@@ -256,11 +270,14 @@ func (p *probe) observability() {
 		r := p.run("k6", "version")
 		if p.check("k6 version", r) {
 			first, _, _ := strings.Cut(strings.TrimSpace(r.Stdout), "\n")
-			o.K6Version = safe(first)
+			o.K6Version = p.safe(first)
 		}
 	}
 	if ingresses, ok := p.list(ctx, "ingresses", "--all-namespaces"); ok {
 		for _, ing := range ingresses {
+			if p.ctx.Err() != nil {
+				return
+			}
 			hosts := []string{}
 			search := ing.Metadata.Name + " " + ing.Metadata.Namespace
 			for _, rule := range ing.Spec.Rules {
@@ -294,7 +311,7 @@ func (p *probe) aws() {
 	if a.Profile == "" {
 		a.Profile = "default"
 	}
-	a.Profile = safe(a.Profile)
+	a.Profile = p.safe(a.Profile)
 	var identity struct {
 		Account string `json:"Account"`
 		ARN     string `json:"Arn"`
@@ -316,7 +333,7 @@ func (p *probe) aws() {
 			a.Region = strings.TrimSpace(r.Stdout)
 		}
 	}
-	a.Region = safe(a.Region)
+	a.Region = p.safe(a.Region)
 	if a.Region == "" && p.result.Status == OK {
 		p.fail(Missing, "AWS region is not configured")
 	}

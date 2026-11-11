@@ -57,6 +57,11 @@ counts in gaps. All returned nodes are parsed before provider detection; large
 node lists are never cut before inspecting GKE labels. Use the fallback
 scripts or scoped kubectl reads if an inventory summary omitted your target.
 GCP project discovery requests at most 20 projects, matching the script.
+Each external stdout/stderr response is limited to 8 MiB. An oversized response
+stops its producer and becomes an explicit error gap; truncated JSON is never
+used as evidence. Parsing and redaction share the probe deadline. If either
+expires, the probe keeps facts completed by earlier commands and reports a
+timeout without returning unfinished output.
 
 Context precedence is `--context`, then `SRE_KUBE_CONTEXT`, then one
 `kubectl config current-context` read shared by the cluster probes. Every

@@ -3,7 +3,6 @@ package discover
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -220,6 +219,10 @@ func (p *probe) check(label string, result executil.Result) bool {
 		return true
 	}
 	status := Error
+	if errors.Is(result.Err, safety.ErrResponseTooLarge) {
+		p.fail(Error, label+": "+safety.ErrResponseTooLarge.Error())
+		return false
+	}
 	if errors.Is(result.Err, context.DeadlineExceeded) || errors.Is(result.Err, context.Canceled) {
 		status = Timeout
 	} else {
@@ -241,7 +244,14 @@ func (p *probe) run(name string, args ...string) executil.Result {
 	if p.ctx.Err() != nil {
 		return executil.Result{Err: p.ctx.Err()}
 	}
-	return p.service.Runner.Run(p.ctx, name, args...)
+	result := p.service.Runner.Run(p.ctx, name, args...)
+	if p.ctx.Err() != nil {
+		return executil.Result{Err: p.ctx.Err()}
+	}
+	if len(result.Stdout) > safety.MaxResponseBytes || len(result.Stderr) > safety.MaxResponseBytes {
+		return executil.Result{Err: safety.ErrResponseTooLarge}
+	}
+	return result
 }
 
 func (p *probe) read(label string, dest any, name string, args ...string) bool {
@@ -250,8 +260,15 @@ func (p *probe) read(label string, dest any, name string, args ...string) bool {
 		return false
 	}
 	// Apply the same protection to injected runners as to the real executor.
-	data := safety.NewRedactor().Redact(r.Stdout)
-	if strings.TrimSpace(data) == "null" || json.Unmarshal([]byte(data), dest) != nil {
+	data, err := safety.NewRedactor().RedactContext(p.ctx, r.Stdout)
+	if err != nil {
+		return p.check(label, executil.Result{Err: err})
+	}
+	err = safety.DecodeJSON(p.ctx, data, dest)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, safety.ErrResponseTooLarge) {
+		return p.check(label, executil.Result{Err: err})
+	}
+	if strings.TrimSpace(data) == "null" || err != nil {
 		p.fail(Error, label+": invalid JSON response")
 		return false
 	}

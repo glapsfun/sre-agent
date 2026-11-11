@@ -3,6 +3,7 @@ package executil
 import (
 	"context"
 	"errors"
+	"github.com/glapsfun/sre-agent/internal/safety"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,5 +116,43 @@ func TestMissingContextFails(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if _, err := NewKubernetes(context.Background(), Runner{}, ""); err == nil {
 		t.Fatal("silently accepted unavailable context")
+	}
+}
+
+func TestDeadlineIncludesOutputRedaction(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "response.json")
+	data := `{"padding":"` + strings.Repeat("x", 4*1024*1024) + `","token":"sensitive-value"}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result := (Runner{Timeout: 50 * time.Millisecond}).Run(context.Background(), "cat", path)
+	elapsed := time.Since(start)
+	t.Logf("4MiB actual executor response, 50ms deadline: %s", elapsed)
+	if elapsed > 300*time.Millisecond {
+		t.Fatal("executor redaction exceeded overall deadline")
+	}
+	if !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("missing timeout: %v", result.Err)
+	}
+	if result.Stdout != "" || result.Stderr != "" {
+		t.Fatal("returned incomplete redaction output")
+	}
+}
+
+func TestOversizedOutputFailsWithoutTruncatedEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "response.json")
+	data := `{"padding":"` + strings.Repeat("x", safety.MaxResponseBytes) + `"}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result := (Runner{Timeout: time.Second}).Run(context.Background(), "sh", "-c", `cat "$1"; sleep 10`, "test", path)
+	if time.Since(start) > 300*time.Millisecond {
+		t.Fatal("oversized output did not stop the producer")
+	}
+	if !errors.Is(result.Err, safety.ErrResponseTooLarge) || result.Stdout != "" {
+		t.Fatalf("accepted truncated output: %v", result.Err)
 	}
 }
