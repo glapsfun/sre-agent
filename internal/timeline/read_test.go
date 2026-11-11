@@ -90,6 +90,59 @@ func TestReadListRejectsMalformedEnvelope(t *testing.T) {
 	}
 }
 
+func TestReadListRejectsNullKeyAndJoinsProducer(t *testing.T) {
+	stopped := make(chan struct{})
+	kube := streamKube{stream: func(_ context.Context, w io.Writer, _ ...string) executil.Result {
+		defer close(stopped)
+		_, err := io.WriteString(w, `{"apiVersion":"v1","kind":"List",null :0,"items":[{}]}`)
+		return executil.Result{Err: err}
+	}}
+	seen := 0
+	err := ReadList(context.Background(), kube, "pods", nil, func(json.RawMessage) error { seen++; return nil })
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("producer was not joined")
+	}
+	if err == nil || seen != 0 {
+		t.Fatalf("invalid key accepted: visited=%d error=%v", seen, err)
+	}
+}
+
+func TestReadListProducerDiagnostics(t *testing.T) {
+	for _, tc := range []struct{ name, message, diagnostic string }{
+		{"denied", "Error from server (Forbidden): pods is forbidden; detail=private-marker password=hidden-password", "Forbidden"},
+		{"missing", "error: the server doesn't have a resource type widgets; detail=private-marker password=hidden-password", "doesn't have a resource type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var result executil.Result
+			kube := streamKube{stream: func(ctx context.Context, w io.Writer, _ ...string) executil.Result {
+				result = (executil.Runner{Secrets: []string{"private-marker"}}).Stream(ctx, w, "sh", "-c", `printf '{"apiVersion":"v1","kind":"List","items":[],"raw":"stdout-only-marker"}'; printf '%s\n' "$1" >&2; exit 1`, "test", tc.message)
+				return result
+			}}
+			err := ReadList(context.Background(), kube, "pods", nil, func(json.RawMessage) error { return nil })
+			var producer *ProducerError
+			if !errors.As(err, &producer) {
+				t.Fatalf("producer details unavailable: %v", err)
+			}
+			if producer.ExitCode == nil || *producer.ExitCode != 1 || !strings.Contains(producer.Stderr, tc.diagnostic) {
+				t.Fatal("producer exit status or diagnostic was lost")
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.diagnostic) {
+				t.Fatalf("diagnostic unavailable: %v", err)
+			}
+			if !errors.Is(err, result.Err) {
+				t.Fatal("producer cause cannot be unwrapped")
+			}
+			for _, secret := range []string{"private-marker", "hidden-password", "stdout-only-marker"} {
+				if strings.Contains(err.Error(), secret) || strings.Contains(producer.Stderr, secret) {
+					t.Fatal("producer error exposed a secret or raw stdout")
+				}
+			}
+		})
+	}
+}
+
 func TestReadListPerRecordBound(t *testing.T) {
 	body := `{"apiVersion":"v1","kind":"List","items":[{"padding":"` + strings.Repeat("x", safety.MaxResponseBytes) + `"}]}`
 	err := ReadList(context.Background(), listKube(body), "pods", nil, func(json.RawMessage) error { t.Fatal("visited oversized member"); return nil })
@@ -177,6 +230,10 @@ func TestReadListRealProducerStopsAfterRejection(t *testing.T) {
 	want := errors.New("consumer rejected")
 	start := time.Now()
 	err := ReadList(context.Background(), kube, "pods", nil, func(json.RawMessage) error { return want })
+	var producer *ProducerError
+	if errors.As(err, &producer) {
+		t.Fatal("producer cleanup masked consumer rejection")
+	}
 	if !errors.Is(err, want) || time.Since(start) > 2*time.Second {
 		t.Fatalf("error=%v duration=%s", err, time.Since(start))
 	}

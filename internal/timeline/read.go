@@ -13,6 +13,25 @@ import (
 	"github.com/glapsfun/sre-agent/internal/safety"
 )
 
+// ProducerError retains Stream's already-redacted diagnostics and normal
+// nonzero exit status for source classification, without retaining raw stdout.
+// Stderr remains untrusted text and needs the output boundary used by its caller.
+type ProducerError struct {
+	Stderr   string
+	ExitCode *int
+	cause    error
+}
+
+func (e *ProducerError) Error() string {
+	message := fmt.Sprintf("read Kubernetes list: %v", e.cause)
+	if diagnostic := strings.TrimSpace(e.Stderr); diagnostic != "" {
+		message += ": " + diagnostic
+	}
+	return message
+}
+
+func (e *ProducerError) Unwrap() error { return e.cause }
+
 // ReadList visits bounded raw records without bounding the number of records.
 // Callers must discard their source batch on error and project safe fields before
 // retaining data. The visitor must return promptly, including on cancellation.
@@ -48,7 +67,7 @@ func ReadList(ctx context.Context, kube KubeRunner, resource string, args []stri
 	}
 	// Cleanup failures must not replace the consumer error that caused them.
 	if result.Err != nil && !(parseErr != nil && (errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, io.ErrClosedPipe))) {
-		return fmt.Errorf("read Kubernetes list: %w", result.Err)
+		return &ProducerError{Stderr: result.Stderr, ExitCode: result.ExitCode, cause: result.Err}
 	}
 	return parseErr
 }
@@ -217,7 +236,7 @@ func (r *listReader) read(visit func(json.RawMessage) error) error {
 			return safety.ErrResponseTooLarge
 		}
 		var key string
-		if json.Unmarshal(keyRaw, &key) != nil || seen[key] {
+		if len(keyRaw) == 0 || keyRaw[0] != '"' || json.Unmarshal(keyRaw, &key) != nil || seen[key] {
 			return errList
 		}
 		seen[key] = true
