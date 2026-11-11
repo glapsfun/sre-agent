@@ -39,6 +39,33 @@ For Claude Code always use `/plugin install` — it additionally registers the
 Codex, re-run `install-codex-agents.sh` so the subagents stay in sync with
 the playbooks.
 
+## CLI launcher
+
+Run `skills/sre-agent/scripts/sre version` from this plugin directory. The
+launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
+on amd64 or arm64. It requires Bash, curl, and either sha256sum or shasum.
+The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
+Use `sre version --format text` for a short text view. Only `version` is
+implemented so far; the existing investigation scripts remain available.
+
+The cache lives under `CLAUDE_PLUGIN_DATA/sre-agent` when set, otherwise
+`XDG_CACHE_HOME/sre-agent`, otherwise `HOME/.cache/sre-agent`. Each version and
+platform has its own directory. Downloads use HTTPS, bounded timeouts, and a
+release `SHA256SUMS` manifest. The launcher verifies the checksum before
+publishing a cache entry and before every execution. Checksums detect changed
+downloads and cached binaries; they trust the release manifest and local cache.
+
+A valid cached release works offline. With no cache, a failed download exits
+nonzero and points to the existing scripts, such as `sre-env-discovery.sh` and
+`sre-evidence.sh`. This also applies until `v0.17.0` is published. A checksum
+mismatch refuses execution; remove the affected version cache and retry online.
+A concurrent download exits with a retry message. After an interrupted download,
+remove its stale `.lock` directory only after confirming no launcher is running.
+
+Release tags build and run the version command on all four native platforms
+before publishing binaries and `SHA256SUMS`. Updating the launcher pin is a
+separate source change when adopting a later release.
+
 ## How to use
 
 Start an investigation explicitly with the slash command:

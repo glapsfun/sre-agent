@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version=v0.17.0
+base_url="https://github.com/glapsfun/sre-agent/releases/download/$version"
+
+fail() {
+  printf 'sre: %s\nUse the existing scripts in the skill scripts directory as a fallback.\n' "$1" >&2
+  exit 1
+}
+
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  *) fail 'unsupported operating system (supported: Linux and macOS)' ;;
+esac
+case "$(uname -m)" in
+  x86_64 | amd64) arch=amd64 ;;
+  aarch64 | arm64) arch=arm64 ;;
+  *) fail 'unsupported architecture (supported: amd64 and arm64)' ;;
+esac
+
+if command -v sha256sum >/dev/null 2>&1; then
+  checksum=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  checksum=(shasum -a 256)
+else
+  fail 'a SHA-256 tool is required: sha256sum or shasum'
+fi
+
+cache_root="${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-${HOME:?HOME or a cache directory must be set}/.cache}}"
+cache_parent="$cache_root/sre-agent/$version"
+cache="$cache_parent/$os-$arch"
+asset="sre_${version}_${os}_${arch}"
+
+verify() {
+  local directory="$1" expected actual
+  [[ -f "$directory/sre" && ! -L "$directory/sre" && -f "$directory/SHA256SUMS" && ! -L "$directory/SHA256SUMS" ]] || return 1
+  expected="$(awk -v name="$asset" '$2 == name {print $1}' "$directory/SHA256SUMS")"
+  [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || return 1
+  actual="$("${checksum[@]}" "$directory/sre")" || return 1
+  [[ "${actual%% *}" == "$expected" ]]
+}
+
+if [[ ! -e "$cache" ]]; then
+  command -v curl >/dev/null 2>&1 || fail 'curl is required to download the release'
+  umask 077
+  mkdir -p "$cache_parent" || fail 'cannot create the release cache'
+  lock="$cache_parent/.$os-$arch.lock"
+  mkdir "$lock" 2>/dev/null || fail 'another download is running; retry after it finishes (a stale .lock directory can be removed)'
+  stage=''
+  cleanup() {
+    [[ -z "$stage" ]] || rm -rf "$stage"
+    rmdir "$lock" 2>/dev/null || true
+  }
+  trap cleanup EXIT
+  trap 'exit 1' HUP INT TERM
+  # Recheck after acquiring the lock in case another launcher just published.
+  if [[ ! -e "$cache" ]]; then
+    stage="$(mktemp -d "$cache_parent/.download.XXXXXXXX")" || fail 'cannot create a temporary download directory'
+    for file in "$asset" SHA256SUMS; do
+      destination="$stage/$file"
+      [[ "$file" != "$asset" ]] || destination="$stage/sre"
+      curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 120 \
+        --output "$destination" "$base_url/$file" \
+        || fail "release download failed: network unavailable, offline, or $version has not been published"
+    done
+    verify "$stage" || fail 'release checksum mismatch; download was not cached or executed'
+    chmod 700 "$stage/sre"
+    mv "$stage" "$cache"
+    stage=''
+  fi
+  cleanup
+  trap - EXIT HUP INT TERM
+fi
+
+verify "$cache" || fail 'cached release checksum mismatch; remove the version cache and retry online'
+[[ -x "$cache/sre" ]] || fail 'cached release is not executable'
+exec "$cache/sre" "$@"
