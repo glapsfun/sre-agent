@@ -1,0 +1,135 @@
+package timeline
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestTemplateSecretsNeverEscape(t *testing.T) {
+	raw := json.RawMessage(`{"metadata":{"annotations":{"anything":"ANNOTATION_CANARY"},"labels":{"pod-template-hash":"generated"}},"spec":{"containers":[{"name":"api","image":"app:v1","command":["COMMAND_CANARY"],"args":["ARGS_CANARY"],"env":[{"name":"PLAIN","value":"ENV_CANARY"},{"name":"REF","valueFrom":{"secretKeyRef":{"name":"app-credentials","key":"login"}}}],"readinessProbe":{"httpGet":{"path":"/ready","port":8080,"httpHeaders":[{"name":"X-Key","value":"HEADER_CANARY"}]},"failureThreshold":3},"lifecycle":{"preStop":{"exec":{"command":["HOOK_CANARY"]}}},"unknownField":{"arbitrary":"UNKNOWN_CANARY"}}]}}`)
+	safe, excluded, err := ProjectTemplate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, _ := json.Marshal(struct {
+		Safe     any
+		Excluded any
+		Diff     any
+	}{safe, excluded, DiffTemplates(nil, safe)})
+	for _, secret := range []string{"ANNOTATION_CANARY", "COMMAND_CANARY", "ARGS_CANARY", "ENV_CANARY", "HEADER_CANARY", "HOOK_CANARY", "UNKNOWN_CANARY", "generated"} {
+		if strings.Contains(string(output), secret) {
+			t.Fatalf("excluded value escaped: %s", secret)
+		}
+	}
+	for _, want := range []string{"app:v1", "app-credentials", "login", "/ready", "failureThreshold"} {
+		if !strings.Contains(string(output), want) {
+			t.Errorf("missing safe field %s: %s", want, output)
+		}
+	}
+	if len(excluded) < 6 {
+		t.Fatalf("missing coverage: %v", excluded)
+	}
+	changed := strings.ReplaceAll(string(raw), "ENV_CANARY", "OTHER_SECRET")
+	changed = strings.ReplaceAll(changed, "generated", "newhash")
+	other, _, err := ProjectTemplate(json.RawMessage(changed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes := DiffTemplates(safe, other); len(changes) != 0 {
+		t.Fatalf("hidden changes must not be inferred: %+v", changes)
+	}
+}
+
+func TestTemplateSafeFieldsAndStableDiff(t *testing.T) {
+	before := json.RawMessage(`{"spec":{"serviceAccountName":"worker","terminationGracePeriodSeconds":30,"nodeSelector":{"pool":"batch"},"securityContext":{"runAsNonRoot":true},"containers":[{"name":"api","image":"app:v1","resources":{"requests":{"cpu":"100m"}},"ports":[{"name":"http","containerPort":8080}],"livenessProbe":{"tcpSocket":{"port":8080},"periodSeconds":10},"volumeMounts":[{"name":"config","mountPath":"/etc/app"}]}],"initContainers":[{"name":"setup","image":"setup:v1"}],"volumes":[{"name":"config","configMap":{"name":"config-v1","items":[{"key":"config","path":"app.conf"}]}}]}}`)
+	a, gaps, err := ProjectTemplate(before)
+	if err != nil || len(gaps) > 0 {
+		t.Fatalf("projection: %v %v", err, gaps)
+	}
+	after := strings.ReplaceAll(string(before), "app:v1", "app:v2")
+	after = strings.ReplaceAll(after, "100m", "200m")
+	after = strings.ReplaceAll(after, "config-v1", "config-v2")
+	after = strings.ReplaceAll(after, `"periodSeconds":10`, `"periodSeconds":20`)
+	b, _, err := ProjectTemplate(json.RawMessage(after))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := DiffTemplates(a, b)
+	got := map[string][2]any{}
+	for _, c := range changes {
+		got[c.Path] = [2]any{c.Before, c.After}
+	}
+	want := map[string][2]any{"spec.containers[api].image": {"app:v1", "app:v2"}, "spec.containers[api].resources.requests.cpu": {"100m", "200m"}, "spec.containers[api].livenessProbe.periodSeconds": {float64(10), float64(20)}, "spec.volumes[config].configMap.name": {"config-v1", "config-v2"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("deltas=%#v", got)
+	}
+}
+
+func TestTemplateInvalidInput(t *testing.T) {
+	for _, raw := range []string{`null`, `[]`, `{}`, `{"spec":null}`, `{"spec":{"containers":[]}}`, `{"spec":{"containers":"wrong"}}`, `{"spec":{"containers":[{"name":"a","image":{"hidden":"SECRET"}}]}}`, `{"spec":{"containers":[{"name":"a"},{"name":"a"}]}}`} {
+		_, _, err := ProjectTemplate(json.RawMessage(raw))
+		if err == nil {
+			t.Errorf("accepted invalid template %s", raw)
+		} else if strings.Contains(err.Error(), "SECRET") {
+			t.Fatal("raw input in diagnostic")
+		}
+	}
+}
+
+func TestTemplateSchedulingSecurityAndReferences(t *testing.T) {
+	raw := json.RawMessage(`{"spec":{"containers":[{"name":"main","image":"app:v1","securityContext":{"capabilities":{"drop":["ALL"]},"runAsNonRoot":true},"lifecycle":{"preStop":{"sleep":{"seconds":5}}},"envFrom":[{"configMapRef":{"name":"settings"}},{"secretRef":{"name":"credentials"}}]}],"initContainers":[{"name":"init","image":"init:v1"}],"serviceAccountName":"worker","terminationGracePeriodSeconds":30,"securityContext":{"seccompProfile":{"type":"RuntimeDefault"},"supplementalGroups":[1000]},"nodeSelector":{"pool":"batch"},"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"pool","operator":"In","values":["batch"]}]}]}}},"tolerations":[{"key":"batch","operator":"Exists","effect":"NoSchedule"}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"data-pvc","readOnly":true}},{"name":"projected","projected":{"sources":[{"secret":{"name":"credentials","items":[{"key":"login","path":"login"}]}},{"serviceAccountToken":{"path":"token","expirationSeconds":3600}}]}}]}}`)
+	got, gaps, err := ProjectTemplate(raw)
+	if err != nil || len(gaps) != 0 {
+		t.Fatalf("projection err=%v gaps=%v", err, gaps)
+	}
+	for path, want := range map[string]any{
+		"spec.initContainers[init].image":                            "init:v1",
+		"spec.containers[main].securityContext.capabilities.drop[0]": "ALL",
+		"spec.containers[main].lifecycle.preStop.sleep.seconds":      float64(5),
+		"spec.containers[main].envFrom[0].configMapRef.name":         "settings",
+		"spec.containers[main].envFrom[1].secretRef.name":            "credentials",
+		"spec.serviceAccountName":                                    "worker",
+		"spec.terminationGracePeriodSeconds":                         float64(30),
+		"spec.securityContext.seccompProfile.type":                   "RuntimeDefault",
+		"spec.securityContext.supplementalGroups[0]":                 float64(1000),
+		"spec.nodeSelector.pool":                                     "batch",
+		"spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]": "batch",
+		"spec.volumes[data].persistentVolumeClaim.claimName":                                                                           "data-pvc",
+		"spec.volumes[projected].projected.sources[0].secret.items[0].key":                                                             "login",
+		"spec.volumes[projected].projected.sources[1].serviceAccountToken.expirationSeconds":                                           float64(3600),
+	} {
+		if !reflect.DeepEqual(got[path], want) {
+			t.Errorf("%s = %v, want %v", path, got[path], want)
+		}
+	}
+}
+
+func TestTemplateReorderAndUnknownCoverage(t *testing.T) {
+	a, _, err := ProjectTemplate(json.RawMessage(`{"spec":{"containers":[{"name":"a","image":"a:v1"},{"name":"b","image":"b:v1"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, gaps, err := ProjectTemplate(json.RawMessage(`{"metadata":{"annotations":{"unknown":"SECRET_VALUE"}},"spec":{"SECRET_FIELD":"SECRET_VALUE","containers":[{"name":"b","image":"b:v1"},{"name":"a","image":"a:v1"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(DiffTemplates(a, b)) != 0 || len(gaps) != 2 {
+		t.Fatalf("changes=%v gaps=%v", DiffTemplates(a, b), gaps)
+	}
+	output, _ := json.Marshal(gaps)
+	if strings.Contains(string(output), "SECRET") {
+		t.Fatal("unknown key escaped coverage diagnostic")
+	}
+}
+
+func TestTemplateProbeFieldsAreNotLifecycleFields(t *testing.T) {
+	safe, gaps, err := ProjectTemplate(json.RawMessage(`{"spec":{"containers":[{"name":"api","image":"app:v1","livenessProbe":{"httpGet":{"path":"/live","port":8080},"sleep":{"seconds":77}}}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, retained := safe["spec.containers[api].livenessProbe.sleep.seconds"]; retained || len(gaps) != 1 {
+		t.Fatalf("undocumented probe field retained: %v gaps=%v", safe, gaps)
+	}
+}
