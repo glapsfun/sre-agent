@@ -18,7 +18,7 @@ func TestPromCLIJSONTextAndDefaultOptions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		q := r.URL.Query()
-		if q.Get("query") != "up" || q.Get("step") != "30" || q.Get("timeout") != "30" {
+		if q.Get("query") != "up" || q.Get("step") != "30000ms" || q.Get("timeout") != "30" {
 			t.Errorf("query: %v", q)
 		}
 		fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"app","token":"hidden"},"values":[]}]}}`)

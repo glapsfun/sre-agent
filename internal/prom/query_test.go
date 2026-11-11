@@ -31,7 +31,7 @@ func fixedService() Service { return Service{Now: func() time.Time { return time
 func TestHTTPEncodingSummaryAndRedaction(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/prefix/api/v1/query_range" || r.URL.Query().Get("query") != queryOptions("").Query || r.URL.Query().Get("start") != "0" || r.URL.Query().Get("end") != "5" || r.URL.Query().Get("step") != "1" {
+		if r.URL.Path != "/prefix/api/v1/query_range" || r.URL.Query().Get("query") != queryOptions("").Query || r.URL.Query().Get("start") != "0" || r.URL.Query().Get("end") != "5" || r.URL.Query().Get("step") != "1000ms" {
 			t.Errorf("request: %s", r.URL)
 		}
 		fmt.Fprint(w, matrix)
@@ -183,7 +183,7 @@ func TestDefaultGrid500SeriesHTTPAndProxy(t *testing.T) {
 	t.Logf("500 series, 60,500 samples, %d response bytes", len(body))
 	installKubectl(t, body, oneService, false)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("start") != "0" || r.URL.Query().Get("end") != "3600" || r.URL.Query().Get("step") != "30" {
+		if r.URL.Query().Get("start") != "0" || r.URL.Query().Get("end") != "3600" || r.URL.Query().Get("step") != "30000ms" {
 			t.Errorf("default grid: %s", r.URL)
 		}
 		fmt.Fprint(w, body)
@@ -421,10 +421,13 @@ func TestSupportedFractionalGridMatchesPrometheusMilliseconds(t *testing.T) {
 		query := r.URL.Query()
 		start, end := parseTime(query.Get("start")), parseTime(query.Get("end"))
 		stepSeconds, err := strconv.ParseFloat(query.Get("step"), 64)
-		if err != nil {
-			t.Error(err)
-		}
 		step := int64(time.Duration(stepSeconds*float64(time.Second)) / time.Millisecond)
+		if err != nil {
+			step, err = strconv.ParseInt(strings.TrimSuffix(query.Get("step"), "ms"), 10, 64)
+			if err != nil || !strings.HasSuffix(query.Get("step"), "ms") {
+				t.Error("invalid millisecond duration")
+			}
+		}
 		if step <= 0 {
 			t.Error("unsupported grid reached server")
 			http.Error(w, "bad step", 400)
@@ -441,7 +444,7 @@ func TestSupportedFractionalGridMatchesPrometheusMilliseconds(t *testing.T) {
 	}))
 	defer server.Close()
 	now := time.Unix(1794393000, 123456789)
-	for _, tc := range []struct{ span, step time.Duration }{{1001 * time.Millisecond, 250 * time.Millisecond}, {5 * time.Millisecond, time.Millisecond}} {
+	for _, tc := range []struct{ span, step time.Duration }{{1001 * time.Millisecond, 250 * time.Millisecond}, {5 * time.Millisecond, time.Millisecond}, {3003 * time.Millisecond, 1001 * time.Millisecond}} {
 		s := Service{Now: func() time.Time { return now }}
 		report, err := s.Query(context.Background(), Options{URL: server.URL, Query: "vector(1)", Range: tc.span, Step: tc.step})
 		if err != nil {
@@ -450,6 +453,26 @@ func TestSupportedFractionalGridMatchesPrometheusMilliseconds(t *testing.T) {
 		if len(report.Series) != 1 || report.Series[0].MissingSteps != 0 || *report.Series[0].Mean != 1 || !report.Start.Equal(now.Truncate(time.Millisecond).Add(-tc.span)) {
 			t.Fatalf("compatible grid: %+v", report)
 		}
+	}
+}
+
+func TestProxyEncodesExactMillisecondStep(t *testing.T) {
+	dir := installKubectl(t, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[[0,"1"],[1.001,"1"],[2.002,"1"],[3.003,"1"]]}]}}`, oneService, false)
+	s := Service{Now: func() time.Time { return time.UnixMilli(3003) }}
+	report, err := s.Query(context.Background(), Options{Context: "pinned", Query: "up", Range: 3003 * time.Millisecond, Step: 1001 * time.Millisecond})
+	if err != nil || len(report.Series) != 1 || report.Series[0].MissingSteps != 0 {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	requests, err := os.ReadFile(filepath.Join(dir, "requests"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(strings.TrimSpace(string(requests)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Query().Get("step") != "1001ms" {
+		t.Fatalf("inexact wire step: %s", u.Query().Get("step"))
 	}
 }
 

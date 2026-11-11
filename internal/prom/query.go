@@ -105,7 +105,8 @@ func (s Service) Query(ctx context.Context, opts Options) (Report, error) {
 	}
 	end := s.Now().UTC().Truncate(time.Millisecond)
 	start := end.Add(-opts.Range)
-	params := url.Values{"query": {opts.Query}, "start": {timestamp(start)}, "end": {timestamp(end)}, "step": {strconv.FormatFloat(opts.Step.Seconds(), 'f', -1, 64)}, "timeout": {strconv.FormatFloat(opts.Timeout.Seconds(), 'f', -1, 64)}}
+	// Decimal seconds can round a supported 1001ms interval down to 1000ms.
+	params := url.Values{"query": {opts.Query}, "start": {timestamp(start)}, "end": {timestamp(end)}, "step": {strconv.FormatInt(opts.Step.Milliseconds(), 10) + "ms"}, "timeout": {strconv.FormatFloat(opts.Timeout.Seconds(), 'f', -1, 64)}}
 	var body []byte
 	var err error
 	redactor := safety.NewRedactor()
