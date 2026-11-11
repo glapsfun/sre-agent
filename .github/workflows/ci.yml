@@ -40,9 +40,6 @@ jobs:
           cache: false
       - name: Go formatting
         run: test -z "$(gofmt -l cmd internal)"
-      - name: Diagnose scalar deadline on Intel macOS
-        if: matrix.goos == 'darwin' && matrix.goarch == 'amd64'
-        run: go test -v ./internal/discover -run '^TestOverallDeadlineIncludesScalarRedaction$' -count=30
       - name: Go vet and tests
         run: |
           go vet ./...
