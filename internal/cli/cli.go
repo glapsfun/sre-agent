@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
+
+	"github.com/glapsfun/sre-agent/internal/discover"
 
 	"github.com/glapsfun/sre-agent/internal/safety"
 )
@@ -30,10 +34,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func run(args []string, stdout, stderr io.Writer, dispatch func(string) (any, error)) int {
-	format, command, err := parse(args)
+	format, command, opts, err := parse(args)
 	var data any
 	if err == nil {
-		data, err = dispatch(command)
+		if command == "discover" {
+			data, err = discover.Discover(context.Background(), opts)
+		} else {
+			data, err = dispatch(command)
+		}
 	}
 	envelope := Envelope{OK: err == nil, Data: data, Gaps: []string{}, Errors: []string{}}
 	code := 0
@@ -41,9 +49,34 @@ func run(args []string, stdout, stderr io.Writer, dispatch func(string) (any, er
 		envelope.Errors = append(envelope.Errors, safety.NewRedactor().Redact(err.Error()))
 		code = 1
 	}
+	if report, ok := data.(discover.Report); ok {
+		for _, name := range []string{"env", "obs", "aws", "gcloud", "github"} {
+			probe, selected := report.Probes[name]
+			if !selected {
+				continue
+			}
+			for _, gap := range probe.Gaps {
+				envelope.Gaps = append(envelope.Gaps, name+": "+gap)
+			}
+			if probe.Status == discover.Timeout || probe.Status == discover.Denied || probe.Status == discover.Error {
+				envelope.Errors = append(envelope.Errors, name+": "+string(probe.Status))
+			}
+		}
+		if len(envelope.Errors) > 0 {
+			envelope.OK = false
+			code = 1
+		}
+	}
 	var writeErr error
 	if format == "text" {
-		if err != nil {
+		if command == "discover" && data != nil {
+			encoded, encodeErr := json.MarshalIndent(envelope.Data, "", "  ")
+			if encodeErr != nil {
+				writeErr = encodeErr
+			} else {
+				_, writeErr = fmt.Fprintln(stdout, string(encoded))
+			}
+		} else if err != nil {
 			_, writeErr = fmt.Fprintln(stdout, "error:", envelope.Errors[0])
 		} else {
 			_, writeErr = fmt.Fprintln(stdout, "sre", Version)
@@ -58,31 +91,65 @@ func run(args []string, stdout, stderr io.Writer, dispatch func(string) (any, er
 	return code
 }
 
-func parse(args []string) (string, string, error) {
+func parse(args []string) (string, string, discover.Options, error) {
 	format := "json"
+	opts := discover.Options{}
 	var positional []string
+	discoveryFlag := false
+	invalid := func(message string) (string, string, discover.Options, error) {
+		return "json", "", opts, errors.New(message)
+	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		switch {
-		case arg == "--format":
+		if !strings.HasPrefix(arg, "-") {
+			positional = append(positional, arg)
+			continue
+		}
+		name, value, hasValue := strings.Cut(arg, "=")
+		switch name {
+		case "--format", "--context", "--only", "--timeout":
+		default:
+			return invalid("unknown flag; usage: sre version|discover [--format json|text]")
+		}
+		if !hasValue {
 			i++
 			if i == len(args) {
-				return "json", "", errors.New("--format requires json or text")
+				return invalid(name + " requires a value")
 			}
-			format = args[i]
-		case strings.HasPrefix(arg, "--format="):
-			format = strings.TrimPrefix(arg, "--format=")
-		case strings.HasPrefix(arg, "-"):
-			return "json", "", errors.New("unknown flag; usage: sre version [--format json|text]")
-		default:
-			positional = append(positional, arg)
+			value = args[i]
+		}
+		if name != "--format" {
+			discoveryFlag = true
+		}
+		switch name {
+		case "--format":
+			format = value
+		case "--context":
+			if strings.TrimSpace(value) == "" {
+				return invalid("context must not be empty")
+			}
+			opts.Context = value
+		case "--only":
+			opts.Only = strings.Split(value, ",")
+		case "--timeout":
+			timeout, err := time.ParseDuration(value)
+			if err != nil || timeout <= 0 {
+				return invalid("timeout must be a positive duration")
+			}
+			opts.Timeout = timeout
 		}
 	}
 	if format != "json" && format != "text" {
-		return "json", "", errors.New("--format requires json or text")
+		return invalid("--format requires json or text")
 	}
-	if len(positional) != 1 || positional[0] != "version" {
-		return format, "", errors.New("usage: sre version [--format json|text]")
+	if len(positional) != 1 || (positional[0] != "version" && positional[0] != "discover") {
+		return format, "", opts, errors.New("usage: sre version|discover [--format json|text]")
 	}
-	return format, positional[0], nil
+	if positional[0] == "version" && discoveryFlag {
+		return invalid("discovery flags require the discover command")
+	}
+	if err := discover.Validate(opts); err != nil {
+		return format, "", opts, err
+	}
+	return format, positional[0], opts, nil
 }

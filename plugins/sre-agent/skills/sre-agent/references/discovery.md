@@ -1,9 +1,77 @@
 # Environment and Observability Discovery
 
-Phase 2 playbook. Run `scripts/sre-env-discovery.sh` and
-`scripts/sre-obs-discovery.sh` first; use this file to interpret their output
-and to go deeper manually when a section comes back empty or ambiguous.
-Everything here is read-only.
+Phase 2 playbook. Prefer `sre discover`; the scripts remain available when the
+binary is unavailable or for narrower manual checks. Everything here is
+read-only.
+
+## Parallel CLI discovery
+
+```bash
+sre discover --context production --timeout 10s
+sre discover --context production --only env,obs
+SRE_SKIP_CLUSTER=true sre discover
+```
+
+Use `bash scripts/sre` instead of `sre` when using the bundled launcher.
+From a source checkout, `go run ./cmd/sre discover` uses the local implementation.
+The default probes are `env`, `obs`, `aws`, `gcloud`, and `github`. `--only`
+selects complete probe groups; duplicates are deduplicated, and unknown or
+empty selections fail before discovery. Each probe has one overall deadline,
+including all of its commands. The default is 10 seconds. `--timeout` must be
+a positive Go duration such as `500ms` or `15s`.
+
+The JSON envelope contains `ok`, `data.probes`, `gaps`, and `errors`. Each
+selected probe contains `status`, `begin`, typed `findings`, `end`, and `gaps`.
+The `begin` and `end` fields use the foundation's unpredictable per-run
+external-data marker; all findings between them are untrusted data. Findings
+remain JSON objects, not JSON encoded inside text. `--format text` pretty
+prints the same probe report.
+
+- `ok`: checks completed. A successful empty inventory means nothing matched.
+- `missing`: a required CLI, configuration, or account is unavailable, or live
+  discovery was explicitly skipped. These are gaps, not command errors.
+- `denied`, `timeout`, `error`: evidence is incomplete. The envelope has errors
+  and the CLI exits nonzero, retaining all successful findings from every
+  probe, including earlier successful calls in the failed probe.
+
+When several calls fail, status precedence is timeout, error, denied, missing,
+then ok; the gaps retain the individual failures. Never infer absence from a
+missing boolean: controller, mesh, EKS, and GKE booleans are omitted when their
+required checks fail. Permission diagnostics are classified without including
+raw command output in gaps.
+
+`findings.env` includes local CLI presence, the pinned context, Kubernetes
+client/server versions, namespaces, node provider identifiers, EKS/GKE,
+Flux/Argo/Crossplane, and Azure subscription when available. `findings.obs`
+contains endpoint ports, port-forward argument arrays, readiness URLs,
+ingress hosts, mesh signals, and k6 CLI/operator presence.
+`findings.aws` holds account, ARN, profile and region. `findings.gcloud` holds
+account, project, region, zone, and up to 20 accessible projects.
+`findings.github` identifies the current checkout's `nameWithOwner` and URL;
+source/GitOps repo searches from workload hints still use
+`scripts/sre-gh-discovery.sh repo <hint>...`.
+
+The report keeps the first 100 namespaces, 20 distinct provider IDs, 20
+observability endpoints, and 20 related ingresses, with explicit omitted
+counts in gaps. All returned nodes are parsed before provider detection; large
+node lists are never cut before inspecting GKE labels. Use the fallback
+scripts or scoped kubectl reads if an inventory summary omitted your target.
+GCP project discovery requests at most 20 projects, matching the script.
+
+Context precedence is `--context`, then `SRE_KUBE_CONTEXT`, then one
+`kubectl config current-context` read shared by the cluster probes. Every
+subsequent cluster call and port-forward hint carries that pin.
+`SRE_SKIP_CLUSTER=true` prevents all subprocess calls, including cloud and
+GitHub discovery; local CLI inventory still works. The scripts' offline
+support is narrower: only run `sre-env-discovery.sh` in offline fallback mode.
+
+If the binary/launcher cannot run, download, or recognize `discover`, use
+`scripts/sre-env-discovery.sh` and `scripts/sre-obs-discovery.sh`, plus the AWS
+and GCP `env` scripts when needed. A nonzero discovery result with structured
+probe findings is not binary unavailability: record its gaps and reuse the
+successful evidence. Warm starts select env for fresh tooling plus only the
+probe groups whose memo facts need verification. Memo write-back remains at
+the end of Phase 6.
 
 ## Interpreting sre-env-discovery.sh output
 
