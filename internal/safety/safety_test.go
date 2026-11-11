@@ -40,6 +40,35 @@ func TestRedaction(t *testing.T) {
 	}
 }
 
+func TestKnownSecretsInJSONKeysAndScalars(t *testing.T) {
+	r := NewRedactor("alpha", "beta", "123456", "true", "null")
+	input := `{"alpha":"first","beta":"second","[REDACTED]":"original","[REDACTED]#2":"reserved","number":123456,"boolean":true,"empty":null,"nested":[123456,true],"large":9876543210987654321,"safe":false}`
+	got := r.Redact(input)
+	for _, secret := range []string{"alpha", "beta", "123456", "true", "null"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("known secret %q leaked: %s", secret, got)
+		}
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(got), &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 10 || data["[REDACTED]"] != "original" || data["[REDACTED]#2"] != "reserved" || data["[REDACTED]#3"] != "first" || data["[REDACTED]#4"] != "second" {
+		t.Fatalf("redacted keys collided: %s", got)
+	}
+	if data["number"] != "[REDACTED]" || data["boolean"] != "[REDACTED]" || data["empty"] != "[REDACTED]" || data["safe"] != false {
+		t.Fatalf("incorrect scalar redaction: %s", got)
+	}
+	if !strings.Contains(got, `"large":9876543210987654321`) {
+		t.Fatalf("lost numeric precision: %s", got)
+	}
+	for range 20 {
+		if next := r.Redact(input); next != got {
+			t.Fatalf("nondeterministic keys: %s vs %s", next, got)
+		}
+	}
+}
+
 func TestExternalMarkers(t *testing.T) {
 	a, err := NewWrapper()
 	if err != nil {

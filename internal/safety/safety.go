@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -53,19 +54,45 @@ func (r Redactor) Redact(text string) string {
 func (r Redactor) redactValue(value any) any {
 	switch v := value.(type) {
 	case map[string]any:
-		for key, item := range v {
-			if sensitiveKey.MatchString(key) {
-				v[key] = replacement
-			} else {
-				v[key] = r.redactValue(item)
+		keys := make([]string, 0, len(v))
+		used := make(map[string]bool, len(v))
+		for key := range v {
+			keys = append(keys, key)
+			if r.redactText(key) == key {
+				used[key] = true
 			}
 		}
+		// Reserve unchanged keys and sort originals so redaction collisions
+		// never overwrite entries or depend on randomized map iteration.
+		sort.Strings(keys)
+		redacted := make(map[string]any, len(v))
+		for _, key := range keys {
+			name := r.redactText(key)
+			if name != key {
+				base := name
+				for suffix := 2; used[name]; suffix++ {
+					name = base + "#" + strconv.Itoa(suffix)
+				}
+				used[name] = true
+			}
+			if sensitiveKey.MatchString(key) {
+				redacted[name] = replacement
+			} else {
+				redacted[name] = r.redactValue(v[key])
+			}
+		}
+		return redacted
 	case []any:
 		for i, item := range v {
 			v[i] = r.redactValue(item)
 		}
 	case string:
 		return r.redactText(v)
+	case json.Number, bool, nil:
+		encoded, err := json.Marshal(v)
+		if err == nil && r.redactText(string(encoded)) != string(encoded) {
+			return replacement
+		}
 	}
 	return value
 }

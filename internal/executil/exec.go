@@ -37,6 +37,11 @@ func (r Runner) Run(ctx context.Context, name string, args ...string) Result {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	// WaitDelay closes inherited pipes after an early parent exit, but its
+	// context watcher has already stopped and cannot clean up descendants.
+	if cmd.Process != nil {
+		_ = cmd.Cancel()
+	}
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	}

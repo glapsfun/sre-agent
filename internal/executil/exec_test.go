@@ -4,11 +4,49 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestEarlyParentExitTerminatesDescendant(t *testing.T) {
+	start := time.Now()
+	result := (Runner{Timeout: time.Second}).Run(context.Background(), "sh", "-c", "sleep 30 & echo $!")
+	pid, err := strconv.Atoi(strings.TrimSpace(result.Stdout))
+	if err != nil {
+		t.Fatalf("missing descendant PID: %+v", result)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if result.Err == nil {
+		t.Fatal("inherited-pipe wait was silently accepted")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("parent exit did not bound pipe waiting")
+	}
+	// A killed orphan can remain a zombie until the host's init reaps it.
+	deadline := time.Now().Add(time.Second)
+	for {
+		state, psErr := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		if psErr != nil {
+			var exit *exec.ExitError
+			if errors.As(psErr, &exit) && exit.ExitCode() == 1 {
+				break
+			}
+			t.Fatalf("cannot inspect descendant state: %v", psErr)
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(state)), "Z") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant %d survived runner return: %s", pid, state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestTimeoutIncludesInheritedPipes(t *testing.T) {
 	start := time.Now()
