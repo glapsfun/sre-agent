@@ -8,14 +8,26 @@ sre prom query 'up' --url http://localhost:9090 --format text
 ```
 
 Defaults: range `1h`, step `30s`, top `20`, and `--timeout 30s` for the complete
-operation. CLI durations and top must be positive. The range ends at the
+operation. CLI durations and top must be positive. Range and step must use exact
+whole milliseconds, matching Prometheus evaluation precision; `250ms` is valid,
+while `1.5ms` and `1.0001s` fail validation before any network or discovery work.
+The range ends at the
 current time, rounded down to a millisecond. The explicit URL is a base URL;
 deployment prefixes such as `https://metrics.example.com/prometheus` are
 preserved when appending `/api/v1/query_range`.
 
 Without `--url`, context precedence is `--context`, `SRE_KUBE_CONTEXT`, then
 one `kubectl config current-context` read. The selected context is pinned for
-discovery and the authenticated Kubernetes service-proxy query. Automatic
+discovery and the authenticated Kubernetes service-proxy query. The query uses
+a short-lived `kubectl proxy` on a Unix socket in its own mode-0700 directory
+under `/tmp`, keeping socket paths short on Linux and macOS. Only GET requests
+for the exact selected query path and localhost host are accepted; existing
+kubectl rejection filters remain enabled. A dedicated HTTP client uses that
+socket, without environment proxy routing or redirects. Every exit cancels and
+joins the proxy process and removes only its owned temporary directory.
+No TCP listener is opened. Unlike `kubectl get --raw`, this transport preserves
+bounded non-2xx Prometheus response bodies, including invalid-query diagnostics.
+Automatic
 selection requires a complete service-endpoint inventory and exactly one
 Prometheus service. Exposed port 9090 wins; otherwise the service must expose
 one distinct port. No port-forward is started, and readiness URLs from

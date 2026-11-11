@@ -1,7 +1,6 @@
 package prom
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -62,6 +61,12 @@ func Validate(opts Options) error {
 	}
 	if opts.Range < 0 || opts.Step < 0 || opts.Timeout < 0 || opts.Top < 0 {
 		return errors.New("range, step, timeout and top must be positive")
+	}
+	if opts.Range%time.Millisecond != 0 {
+		return errors.New("range must use whole milliseconds")
+	}
+	if opts.Step%time.Millisecond != 0 {
+		return errors.New("step must use whole milliseconds")
 	}
 	if strings.ContainsAny(opts.Context, "\r\n") {
 		return errors.New("invalid Kubernetes context")
@@ -188,19 +193,6 @@ func (s Service) httpRead(ctx context.Context, endpoint string) ([]byte, error) 
 	return body, nil
 }
 
-type boundedBuffer struct {
-	bytes.Buffer
-	exceeded bool
-}
-
-func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > safety.MaxResponseBytes {
-		b.exceeded = true
-		return 0, safety.ErrResponseTooLarge
-	}
-	return b.Buffer.Write(p)
-}
-
 func (s Service) proxyRead(ctx context.Context, opts Options, params url.Values) ([]byte, error) {
 	if os.Getenv("SRE_SKIP_CLUSTER") == "true" {
 		return nil, errors.New("cluster discovery skipped; provide --url")
@@ -257,19 +249,8 @@ func (s Service) proxyRead(ctx context.Context, opts Options, params url.Values)
 			port = p
 		}
 	}
-	path := "/api/v1/namespaces/" + url.PathEscape(ep.Namespace) + "/services/" + url.PathEscape(ep.Service) + ":" + strconv.Itoa(port) + "/proxy/api/v1/query_range?" + params.Encode()
-	var buffer boundedBuffer
-	result := kube.Stream(ctx, &buffer, "get", "--raw", path)
-	if buffer.exceeded {
-		return nil, safety.ErrResponseTooLarge
-	}
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if result.Err != nil {
-		return nil, errors.New("Prometheus Kubernetes service proxy failed (access or transport); provide --url for a reachable endpoint")
-	}
-	return buffer.Bytes(), nil
+	path := "/api/v1/namespaces/" + url.PathEscape(ep.Namespace) + "/services/" + url.PathEscape(ep.Service) + ":" + strconv.Itoa(port) + "/proxy/api/v1/query_range"
+	return readProxy(ctx, kube, path, params)
 }
 
 var resourceName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)

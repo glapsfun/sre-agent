@@ -71,3 +71,21 @@ func TestPromCLIValidationAndErrors(t *testing.T) {
 		t.Fatalf("%d %s", code, &out)
 	}
 }
+
+func TestPromCLIRejectsSubmillisecondGridBeforeRequest(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[]}}`)
+	}))
+	defer server.Close()
+	for _, tc := range []struct{ flag, value string }{{"--range", "1.0001s"}, {"--step", "1.5ms"}} {
+		for _, urlArgs := range [][]string{{"--url", server.URL}, nil} {
+			var out, stderr bytes.Buffer
+			code := Run(append([]string{"prom", "query", "up", tc.flag, tc.value}, urlArgs...), &out, &stderr)
+			if code == 0 || !strings.Contains(out.String(), "whole milliseconds") || hits != 0 {
+				t.Fatalf("code=%d hits=%d output=%s", code, hits, &out)
+			}
+		}
+	}
+}

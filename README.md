@@ -188,14 +188,19 @@ sre prom query 'up' --url https://metrics.example.com/prometheus --range 1h --st
 ```
 
 Defaults are a one-hour range, 30-second step, 20 listed series, and a
-30-second deadline for the whole operation. Each series includes redacted
+30-second deadline for the whole operation. Range and step must be positive
+whole milliseconds; fractional seconds such as `250ms` are supported.
+Each series includes redacted
 labels, finite first/last/min/max/mean, a possible level change, and counts of
 missing steps, NaNs, and positive/negative infinities. Omitted series are
 counted. Empty finite sets have null statistics. Raw samples are not stored.
 
 Without `--url`, the command pins the selected Kubernetes context once and
 uses discovery to select one Prometheus service, then reads its authenticated
-API service proxy. It prefers exposed port 9090, otherwise requiring one
+API service proxy through a short-lived `kubectl proxy` on a private Unix
+socket. The proxy accepts only GET for the selected query path and is stopped
+and removed after the request, including on failure. It exposes no TCP listener
+and preserves Prometheus HTTP error diagnostics. It prefers exposed port 9090, otherwise requiring one
 exposed port. It does not start a port-forward or trust a localhost readiness
 hint. Incomplete discovery, ambiguous services/ports, or proxy failures require
 an explicit reachable `--url`. Explicit URLs preserve path prefixes and bypass

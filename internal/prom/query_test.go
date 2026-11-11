@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -257,9 +258,8 @@ printf '%s\n' "$*" >> "$PROM_FIXTURE/calls"
 if [ "$1 $2" = 'config current-context' ]; then echo pinned; exit; fi
 if [ "$1 $2" != '--context pinned' ]; then exit 9; fi
 shift 2
-if [ "$1 $2" = 'get --raw' ]; then
-  if [ "$PROM_DENIED" = true ]; then echo Forbidden >&2; exit 1; fi
-  cat "$PROM_FIXTURE/response"; exit
+if [ "$1" = proxy ]; then
+  PROM_PROXY_HELPER=1 exec "$PROM_TEST_BINARY" -test.run=^TestKubectlProxyHelper$ -- "$@"
 fi
 if [ "$1 $2" = 'get services' ]; then cat "$PROM_FIXTURE/services"; exit; fi
 printf '{"items":[]}\n'
@@ -270,6 +270,12 @@ printf '{"items":[]}\n'
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("PROM_FIXTURE", dir)
 	t.Setenv("PROM_DENIED", fmt.Sprint(denied))
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PROM_TEST_BINARY", program)
+	t.Setenv("PROM_PROXY_MODE", "")
 	t.Setenv("SRE_KUBE_CONTEXT", "")
 	t.Setenv("SRE_SKIP_CLUSTER", "")
 	return dir
@@ -311,16 +317,20 @@ func TestDiscoveredProxyMatchesDirectAndPinsOnce(t *testing.T) {
 				if !strings.HasPrefix(call, "--context pinned ") {
 					t.Fatalf("unpinned: %s", call)
 				}
-				if strings.Contains(call, "get --raw ") {
-					path := strings.SplitN(call, "get --raw ", 2)[1]
-					u, err := url.Parse(path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if u.Path != "/api/v1/namespaces/monitoring/services/prometheus-main:9090/proxy/api/v1/query_range" || u.Query().Get("query") != opts.Query {
-						t.Fatalf("proxy: %s", path)
-					}
-				}
+			}
+			if !strings.Contains(string(calls), "--context pinned proxy --unix-socket=") || strings.Contains(string(calls), "get --raw") {
+				t.Fatalf("unexpected transport: %s", calls)
+			}
+			requests, err := os.ReadFile(filepath.Join(dir, "requests"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(strings.TrimSpace(string(requests)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u.Path != "/api/v1/namespaces/monitoring/services/prometheus-main:9090/proxy/api/v1/query_range" || u.Query().Get("query") != opts.Query {
+				t.Fatalf("proxy: %s", requests)
 			}
 		})
 	}
@@ -368,6 +378,77 @@ func TestOptionsValidation(t *testing.T) {
 	for _, opts := range []Options{{}, {Query: "up", Range: -1}, {Query: "up", Step: -1}, {Query: "up", Timeout: -1}, {Query: "up", Top: -1}, {Query: "up", URL: "ftp://example.com"}} {
 		if _, err := Query(context.Background(), opts); err == nil {
 			t.Fatalf("accepted %+v", opts)
+		}
+	}
+}
+
+func TestQueryRejectsSubmillisecondGridBeforeTransport(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		span, step time.Duration
+	}{
+		{"range", time.Second + 100*time.Microsecond, 250 * time.Millisecond},
+		{"step", 5 * time.Millisecond, 1500 * time.Microsecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, endpoint := range []string{"http://example.invalid", ""} {
+				dir := installKubectl(t, matrix, oneService, false)
+				calls := 0
+				s := fixedService()
+				s.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { calls++; return nil, errors.New("unexpected request") })}
+				_, err := s.Query(context.Background(), Options{URL: endpoint, Query: "up", Range: tc.span, Step: tc.step})
+				if err == nil || !strings.Contains(err.Error(), tc.name) || !strings.Contains(err.Error(), "whole milliseconds") || calls != 0 {
+					t.Fatalf("calls=%d error=%v", calls, err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "calls")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("invalid grid executed kubectl")
+				}
+			}
+		})
+	}
+}
+
+func TestSupportedFractionalGridMatchesPrometheusMilliseconds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parseTime := func(text string) int64 {
+			value, err := strconv.ParseFloat(text, 64)
+			if err != nil {
+				t.Error(err)
+			}
+			seconds, fraction := math.Modf(value)
+			return time.Unix(int64(seconds), int64(math.Round(fraction*1000)/1000*float64(time.Second))).UnixMilli()
+		}
+		query := r.URL.Query()
+		start, end := parseTime(query.Get("start")), parseTime(query.Get("end"))
+		stepSeconds, err := strconv.ParseFloat(query.Get("step"), 64)
+		if err != nil {
+			t.Error(err)
+		}
+		step := int64(time.Duration(stepSeconds*float64(time.Second)) / time.Millisecond)
+		if step <= 0 {
+			t.Error("unsupported grid reached server")
+			http.Error(w, "bad step", 400)
+			return
+		}
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[`)
+		for at := start; at <= end; at += step {
+			if at > start {
+				fmt.Fprint(w, ",")
+			}
+			fmt.Fprintf(w, `[%d.%03d,"1"]`, at/1000, at%1000)
+		}
+		fmt.Fprint(w, `]}]}}`)
+	}))
+	defer server.Close()
+	now := time.Unix(1794393000, 123456789)
+	for _, tc := range []struct{ span, step time.Duration }{{1001 * time.Millisecond, 250 * time.Millisecond}, {5 * time.Millisecond, time.Millisecond}} {
+		s := Service{Now: func() time.Time { return now }}
+		report, err := s.Query(context.Background(), Options{URL: server.URL, Query: "vector(1)", Range: tc.span, Step: tc.step})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Series) != 1 || report.Series[0].MissingSteps != 0 || *report.Series[0].Mean != 1 || !report.Start.Equal(now.Truncate(time.Millisecond).Add(-tc.span)) {
+			t.Fatalf("compatible grid: %+v", report)
 		}
 	}
 }
