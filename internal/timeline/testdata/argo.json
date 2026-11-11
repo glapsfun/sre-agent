@@ -1,0 +1,259 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "api",
+        "namespace": "argo-a",
+        "uid": "a-api"
+      },
+      "spec": {
+        "destination": {
+          "server": "https://cluster.example",
+          "namespace": "other-default"
+        },
+        "source": {
+          "helm": {
+            "values": "DO_NOT_LEAK"
+          }
+        }
+      },
+      "status": {
+        "controllerNamespace": "argo-a",
+        "resources": [
+          {
+            "group": "apps",
+            "version": "v1",
+            "kind": "Deployment",
+            "namespace": "ns",
+            "name": "api"
+          }
+        ],
+        "history": [
+          {
+            "id": 10,
+            "revision": "revision-a",
+            "deployedAt": "2026-11-11T11:10:00Z",
+            "deployStartedAt": "2026-11-11T11:09:00Z",
+            "source": {
+              "helm": {
+                "values": "DO_NOT_LEAK"
+              }
+            }
+          },
+          {
+            "id": 11,
+            "revisions": [
+              "revision-b",
+              "chart-2.0"
+            ],
+            "deployedAt": "2026-11-11T11:20:00Z",
+            "sources": [
+              {
+                "helm": {
+                  "parameters": [
+                    {
+                      "name": "password",
+                      "value": "DO_NOT_LEAK"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "id": 12,
+            "revision": "undated"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "gateway",
+        "namespace": "argo-a",
+        "uid": "a-gateway"
+      },
+      "spec": {
+        "destination": {
+          "server": "https://cluster.example",
+          "namespace": "other-default"
+        },
+        "source": {
+          "helm": {
+            "values": "DO_NOT_LEAK"
+          }
+        }
+      },
+      "status": {
+        "controllerNamespace": "argo-a",
+        "resources": [
+          {
+            "group": "apps",
+            "version": "v1",
+            "kind": "Deployment",
+            "namespace": "ns",
+            "name": "api-gateway"
+          }
+        ],
+        "history": [
+          {
+            "id": 10,
+            "revision": "revision-a",
+            "deployedAt": "2026-11-11T11:10:00Z",
+            "deployStartedAt": "2026-11-11T11:09:00Z",
+            "source": {
+              "helm": {
+                "values": "DO_NOT_LEAK"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "remote",
+        "namespace": "argo-a",
+        "uid": "a-remote"
+      },
+      "spec": {
+        "destination": {
+          "server": "https://remote.example",
+          "namespace": "other-default"
+        },
+        "source": {
+          "helm": {
+            "values": "DO_NOT_LEAK"
+          }
+        }
+      },
+      "status": {
+        "controllerNamespace": "argo-a",
+        "resources": [
+          {
+            "group": "apps",
+            "version": "v1",
+            "kind": "Deployment",
+            "namespace": "ns",
+            "name": "api"
+          }
+        ],
+        "history": [
+          {
+            "id": 10,
+            "revision": "revision-a",
+            "deployedAt": "2026-11-11T11:10:00Z",
+            "deployStartedAt": "2026-11-11T11:09:00Z",
+            "source": {
+              "helm": {
+                "values": "DO_NOT_LEAK"
+              }
+            }
+          },
+          {
+            "id": 11,
+            "revisions": [
+              "revision-b",
+              "chart-2.0"
+            ],
+            "deployedAt": "2026-11-11T11:20:00Z",
+            "sources": [
+              {
+                "helm": {
+                  "parameters": [
+                    {
+                      "name": "password",
+                      "value": "DO_NOT_LEAK"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "id": 12,
+            "revision": "undated"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "symbolic",
+        "namespace": "argo-a",
+        "uid": "a-symbolic"
+      },
+      "spec": {
+        "destination": {
+          "server": "",
+          "namespace": "other-default",
+          "name": "unknown-cluster"
+        },
+        "source": {
+          "helm": {
+            "values": "DO_NOT_LEAK"
+          }
+        }
+      },
+      "status": {
+        "controllerNamespace": "argo-a",
+        "resources": [
+          {
+            "group": "apps",
+            "version": "v1",
+            "kind": "Deployment",
+            "namespace": "ns",
+            "name": "api"
+          }
+        ],
+        "history": [
+          {
+            "id": 10,
+            "revision": "revision-a",
+            "deployedAt": "2026-11-11T11:10:00Z",
+            "deployStartedAt": "2026-11-11T11:09:00Z",
+            "source": {
+              "helm": {
+                "values": "DO_NOT_LEAK"
+              }
+            }
+          },
+          {
+            "id": 11,
+            "revisions": [
+              "revision-b",
+              "chart-2.0"
+            ],
+            "deployedAt": "2026-11-11T11:20:00Z",
+            "sources": [
+              {
+                "helm": {
+                  "parameters": [
+                    {
+                      "name": "password",
+                      "value": "DO_NOT_LEAK"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "id": 12,
+            "revision": "undated"
+          }
+        ]
+      }
+    }
+  ]
+}
