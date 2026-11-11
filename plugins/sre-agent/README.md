@@ -66,6 +66,24 @@ Release tags build and run the version command on all four native platforms
 before publishing binaries and `SHA256SUMS`. Updating the launcher pin is a
 separate source change when adopting a later release.
 
+## Local database
+
+The CLI storage package creates `.sre-agent/sre.db` at the repository root on
+first use. Linked Git worktrees get their own database. Keep `.sre-agent/`
+out of version control in repositories where you use the agent. The directory
+and database are private to the current user.
+
+The store uses a pure Go SQLite driver, WAL, and a five-second busy timeout for
+concurrent local processes. Use a local filesystem; SQLite WAL does not support
+sharing a database between machines over a network filesystem. Schema upgrades
+run in a transaction when the database opens. A database from a newer binary
+is refused. After all users close it, a deleted database is recreated empty on
+next use.
+
+This foundation provides version metadata and migrations. The ledger, incidents,
+and process log features add their own tables and must redact secret values
+before writes. Existing incident Markdown and project memos stay in place.
+
 ## How to use
 
 Start an investigation explicitly with the slash command:
