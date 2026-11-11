@@ -14,6 +14,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  go:
+    name: Go (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Go formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Go vet and tests
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Build and run version
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -o "$RUNNER_TEMP/sre" ./cmd/sre
+          "$RUNNER_TEMP/sre" version
+          "$RUNNER_TEMP/sre" version --format text
+
   fast:
     name: Fast checks
     runs-on: ubuntu-latest
@@ -24,9 +64,13 @@ jobs:
       - name: Install tooling
         run: scripts/bootstrap.sh --ci
       - name: Format check
-        run: scripts/fmt.sh --check
+        run: |
+          scripts/fmt.sh --check
+          shfmt -i 2 -ci -bn -d plugins/sre-agent/skills/sre-agent/scripts/sre
       - name: Lint
-        run: scripts/lint.sh
+        run: |
+          scripts/lint.sh
+          shellcheck plugins/sre-agent/skills/sre-agent/scripts/sre
       - name: Validate (fast)
         run: scripts/validate.sh --fast
 

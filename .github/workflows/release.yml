@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and verify release binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          go vet ./...
+          go test ./...
+          mkdir -p dist
+          binary="dist/sre_${RELEASE_VERSION}_${GOOS}_${GOARCH}"
+          go build -trimpath -ldflags "-s -w -X github.com/glapsfun/sre-agent/internal/cli.Version=$RELEASE_VERSION" -o "$binary" ./cmd/sre
+          "$binary" version | python3 -c 'import json,os,sys; r=json.load(sys.stdin); assert r["ok"] and r["data"]["version"] == os.environ["RELEASE_VERSION"]'
+          test "$("$binary" version --format text)" = "sre $RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sre-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sre-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum sre_* > SHA256SUMS
+      - name: Publish verified binaries
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data: release } = await github.rest.repos.createRelease({
+              ...context.repo, tag_name: tag, name: tag, draft: true
+            });
+            for (const name of fs.readdirSync('dist').sort()) {
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name,
+                data: fs.readFileSync(`dist/${name}`)
+              });
+            }
+            await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false
+            });

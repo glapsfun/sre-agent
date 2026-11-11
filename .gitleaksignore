@@ -1,0 +1,2 @@
+# Synthetic PEM redaction fixture with literal body "sensitive", not key material.
+071c7a067ce419826c469c92b4d49a21a1e1c8fd:internal/safety/safety_test.go:private-key:27
