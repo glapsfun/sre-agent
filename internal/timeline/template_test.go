@@ -133,3 +133,50 @@ func TestTemplateProbeFieldsAreNotLifecycleFields(t *testing.T) {
 		t.Fatalf("undocumented probe field retained: %v gaps=%v", safe, gaps)
 	}
 }
+
+func TestTemplateEnvironmentIdentitiesAndDuplicates(t *testing.T) {
+	raw := json.RawMessage(`{"spec":{"containers":[{"name":"api","image":"app:v1","env":[{"name":"Logging:LogLevel:Default","valueFrom":{"configMapKeyRef":{"name":"settings","key":"level"}}},{"name":".NET_SETTING","valueFrom":{"secretKeyRef":{"name":"credentials","key":"login"}}},{"name":"DUP","valueFrom":{"configMapKeyRef":{"name":"first","key":"a"}}},{"name":"DUP","valueFrom":{"configMapKeyRef":{"name":"second","key":"b"}}},{"name":"DUP\"][0]","valueFrom":{"configMapKeyRef":{"name":"distinct","key":"c"}}},{"name":"name\\with\"quotes]","valueFrom":{"configMapKeyRef":{"name":"escaped","key":"d"}}},{"name":"literal setting","value":"ENV_CANARY"}]}]}}`)
+	before, gaps, err := ProjectTemplate(raw)
+	if err != nil {
+		t.Fatalf("valid environment discarded image/template: %v", err)
+	}
+	for path, want := range map[string]any{
+		`spec.containers[api].env["Logging:LogLevel:Default"].valueFrom.configMapKeyRef.name`: "settings",
+		`spec.containers[api].env[".NET_SETTING"].valueFrom.secretKeyRef.key`:                 "login",
+		`spec.containers[api].env["DUP"][0].valueFrom.configMapKeyRef.name`:                   "first",
+		`spec.containers[api].env["DUP"][1].valueFrom.configMapKeyRef.name`:                   "second",
+		`spec.containers[api].env["DUP\"][0]"].valueFrom.configMapKeyRef.name`:                "distinct",
+		`spec.containers[api].env["name\\with\"quotes]"].valueFrom.configMapKeyRef.name`:      "escaped",
+	} {
+		if before[path] != want {
+			t.Errorf("%s = %v, want %v", path, before[path], want)
+		}
+	}
+	if !strings.Contains(strings.Join(gaps, " "), "duplicate") {
+		t.Fatalf("duplicate association coverage missing: %v", gaps)
+	}
+	after, _, err := ProjectTemplate(json.RawMessage(strings.Replace(string(raw), "app:v1", "app:v2", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := DiffTemplates(before, after); !reflect.DeepEqual(got, []FieldChange{{Path: "spec.containers[api].image", Before: "app:v1", After: "app:v2"}}) {
+		t.Fatalf("image change lost or env identity collision: %+v", got)
+	}
+	output, _ := json.Marshal([]any{before, after, gaps})
+	if strings.Contains(string(output), "ENV_CANARY") {
+		t.Fatal("literal environment value escaped")
+	}
+}
+
+func TestTemplateEnvironmentNamesDoNotRelaxOtherIdentities(t *testing.T) {
+	for _, raw := range []string{
+		`{"spec":{"containers":[{"name":"Logging:LogLevel:Default","image":"app:v1"}]}}`,
+		`{"spec":{"containers":[{"name":"api","image":"app:v1"}],"volumes":[{"name":".NET_SETTING"}]}}`,
+		`{"spec":{"containers":[{"name":"api","image":"app:v1","env":[{"name":"INVALID=NAME","value":"ENV_CANARY"}]}]}}`,
+	} {
+		_, _, err := ProjectTemplate(json.RawMessage(raw))
+		if err == nil {
+			t.Errorf("invalid identity accepted: %s", raw)
+		}
+	}
+}

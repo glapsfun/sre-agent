@@ -295,3 +295,80 @@ func TestReplicaSetReuseAndMalformedPeer(t *testing.T) {
 		}
 	}
 }
+
+func TestReplicaSetEnvironmentNamesPreserveImageChanges(t *testing.T) {
+	for _, name := range []string{"Logging:LogLevel:Default", ".NET_SETTING"} {
+		t.Run(name, func(t *testing.T) {
+			body := strings.ReplaceAll(fixture(t, "replicasets"), `"name": "PLAIN"`, `"name": "`+name+`"`)
+			r := CollectReplicaSets(context.Background(), timelineScope(), listKube(body))
+			if len(r.Entries) != 4 {
+				t.Fatalf("valid env erased ReplicaSets: entries=%d gaps=%v", len(r.Entries), r.Gaps)
+			}
+			var got bool
+			for _, e := range r.Entries {
+				if e.ID == "a2" {
+					for _, change := range e.Details["changes"].([]FieldChange) {
+						if change.Path == "spec.containers[api].image" && change.Before == "app:v1" && change.After == "app:v2" {
+							got = true
+						}
+					}
+				}
+			}
+			if !got {
+				t.Fatal("valid env erased image change")
+			}
+		})
+	}
+}
+
+func TestEventTimesReferenceKindsAndNamespaceScope(t *testing.T) {
+	role := eventRecord("role-event")
+	role["involvedObject"] = map[string]any{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "namespace": "ns", "name": "system:controller", "uid": "role"}
+	r := CollectEvents(context.Background(), timelineScope(), listKube(eventList(role)))
+	if len(r.Entries) != 1 || r.Entries[0].Object.Name != "system:controller" {
+		t.Errorf("valid RBAC event omitted: entries=%d gaps=%v", len(r.Entries), r.Gaps)
+	}
+	for _, name := range []string{"", ".", "..", "invalid/name", "invalid%name"} {
+		invalid := eventRecord("invalid-ref")
+		invalid["involvedObject"].(map[string]any)["name"] = name
+		r := CollectEvents(context.Background(), timelineScope(), listKube(eventList(invalid)))
+		if len(r.Entries) != 0 || !hasGap(r, "error") {
+			t.Errorf("invalid reference accepted: %q result=%+v", name, r)
+		}
+	}
+	for _, namespace := range []string{"default", "kube-system"} {
+		t.Run(namespace, func(t *testing.T) {
+			scope := timelineScope()
+			scope.Namespace = namespace
+			node := eventRecord("node-event")
+			node["metadata"].(map[string]any)["namespace"] = namespace
+			node["involvedObject"] = map[string]any{"apiVersion": "v1", "kind": "Node", "name": "worker-1", "uid": "node"}
+			node["eventTime"] = "2026-11-11T11:00:00Z"
+			node["reportingComponent"] = "node-controller"
+			r := CollectEvents(context.Background(), scope, listKube(eventList(node)))
+			if len(r.Entries) != 1 || r.Entries[0].Object.Namespace != "" {
+				t.Fatalf("namespace event lost or reference namespace fabricated: %+v", r)
+			}
+			scope.Workload = "deploy/api"
+			target := Object{APIVersion: "apps/v1", Kind: "Deployment", Namespace: namespace, Name: "api", UID: "deployment"}
+			scope.Target = &target
+			scope.Objects = map[string]Object{target.UID: target}
+			scope.Related = map[string]bool{target.UID: true}
+			r = CollectEvents(context.Background(), scope, listKube(eventList(node, role)))
+			if len(r.Entries) != 0 {
+				t.Fatalf("unrelated event entered workload scope: %+v", r)
+			}
+			scope.Target = nil
+			r = CollectEvents(context.Background(), scope, listKube(eventList(node)))
+			if len(r.Entries) != 0 {
+				t.Fatal("unresolved workload broadened")
+			}
+			scope.Workload = ""
+			node["metadata"].(map[string]any)["namespace"] = "other"
+			r = CollectEvents(context.Background(), scope, listKube(eventList(node)))
+			if len(r.Entries) != 0 {
+				t.Fatal("other namespace event included")
+			}
+		})
+	}
+}

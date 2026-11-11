@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/glapsfun/sre-agent/internal/safety"
@@ -21,12 +22,13 @@ type FieldChange struct {
 // Template fields are allowlisted recursively. Unknown fields never reach retained
 // data, including diagnostics, where only schema paths are reported.
 type templateField struct {
-	fields  map[string]*templateField
-	item    *templateField
-	named   bool
-	scalar  string
-	dynamic bool
-	ignore  bool
+	fields      map[string]*templateField
+	item        *templateField
+	named       bool
+	environment bool
+	scalar      string
+	dynamic     bool
+	ignore      bool
 }
 
 var textField = &templateField{scalar: "string"}
@@ -80,7 +82,7 @@ func buildTemplateSchema() *templateField {
 	resourceRef := objectField(fields("containerName resource divisor", textField))
 	env := objectField(fields("name", textField), map[string]*templateField{"value": nil, "valueFrom": objectField(map[string]*templateField{"secretKeyRef": reference, "configMapKeyRef": reference, "fieldRef": fieldRef, "resourceFieldRef": resourceRef})})
 	container := objectField(fields("name image imagePullPolicy workingDir terminationMessagePath terminationMessagePolicy restartPolicy", textField), fields("stdin stdinOnce tty", boolField), map[string]*templateField{
-		"command": nil, "args": nil, "env": arrayField(env, true), "envFrom": arrayField(objectField(fields("prefix", textField), map[string]*templateField{"secretRef": reference, "configMapRef": reference}), false),
+		"command": nil, "args": nil, "env": &templateField{item: env, environment: true}, "envFrom": arrayField(objectField(fields("prefix", textField), map[string]*templateField{"secretRef": reference, "configMapRef": reference}), false),
 		"resources": resource, "ports": arrayField(objectField(fields("name protocol hostIP", textField), fields("containerPort hostPort", numberField)), false),
 		"livenessProbe": probe, "readinessProbe": probe, "startupProbe": probe, "securityContext": security,
 		"lifecycle":     objectField(map[string]*templateField{"postStart": action, "preStop": action}),
@@ -172,6 +174,9 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 		if !ok {
 			return invalid()
 		}
+		if schema.environment {
+			return projectEnvironment(values, schema.item, path, out, excluded)
+		}
 		used := map[string]bool{}
 		for i, item := range values {
 			key := fmt.Sprint(i)
@@ -219,6 +224,48 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 			continue
 		}
 		if err := projectTemplateField(item, child, childPath, out, excluded); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Environment names use relaxed API syntax. Quoting and occurrence indexes keep
+// punctuation and duplicate names from overwriting independent reference fields.
+func projectEnvironment(values []any, schema *templateField, path string, out map[string]any, excluded map[string]bool) error {
+	names := make([]string, len(values))
+	counts := map[string]int{}
+	for i, item := range values {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return errors.New("invalid environment entry")
+		}
+		name, ok := obj["name"].(string)
+		if !ok || name == "" {
+			return errors.New("invalid environment identity")
+		}
+		for _, char := range name {
+			if char < 32 || char > 126 || char == '=' {
+				return errors.New("invalid environment identity")
+			}
+		}
+		names[i] = name
+		counts[name]++
+	}
+	occurrences := map[string]int{}
+	for i, item := range values {
+		name := names[i]
+		if safety.NewRedactor().Redact(name) != name {
+			excluded[path+"[*] (redacted environment identity)"] = true
+			continue
+		}
+		itemPath := path + "[" + strconv.Quote(name) + "]"
+		if counts[name] > 1 {
+			excluded[path+"[*] (duplicate names matched by occurrence order)"] = true
+			itemPath += "[" + strconv.Itoa(occurrences[name]) + "]"
+			occurrences[name]++
+		}
+		if err := projectTemplateField(item, schema, itemPath, out, excluded); err != nil {
 			return err
 		}
 	}

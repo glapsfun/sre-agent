@@ -66,6 +66,10 @@ func kubeCommand(scope Scope, resource string) string {
 	return "kubectl --context " + strconv.Quote(scope.Context) + " get " + resource + " --namespace " + strconv.Quote(scope.Namespace) + " --chunk-size=500 -o json"
 }
 
+func validEventReferenceName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/%")
+}
+
 func CollectEvents(ctx context.Context, scope Scope, kube KubeRunner) SourceResult {
 	result := newKubeResult("kubernetes-events")
 	err := ReadList(ctx, kube, "events", []string{"--namespace=" + scope.Namespace, "--chunk-size=500"}, func(raw json.RawMessage) error {
@@ -93,19 +97,23 @@ func CollectEvents(ctx context.Context, scope Scope, kube KubeRunner) SourceResu
 				Count int64  `json:"count"`
 			} `json:"series"`
 		}
-		if json.Unmarshal(raw, &event) != nil || event.Kind != "Event" || event.APIVersion != "v1" || event.Metadata.Namespace != scope.Namespace || event.Metadata.UID == "" || !objectName.MatchString(event.Metadata.Name) || event.Involved.Kind == "" || !objectName.MatchString(event.Involved.Name) {
+		if json.Unmarshal(raw, &event) != nil || event.Kind != "Event" || event.APIVersion != "v1" || event.Metadata.Namespace != scope.Namespace || event.Metadata.UID == "" || !objectName.MatchString(event.Metadata.Name) || event.Involved.Kind == "" || !validEventReferenceName(event.Involved.Name) {
 			sourceGap(&result, "error", "invalid event identity or fields; record omitted")
 			return nil
 		}
 		ref := Object{APIVersion: event.Involved.APIVersion, Kind: event.Involved.Kind, Namespace: event.Involved.Namespace, Name: event.Involved.Name, UID: event.Involved.UID}
-		matched, gap := scope.MatchObject(ref)
-		if !matched {
-			return nil
+		// Namespace-wide events belong to their metadata namespace, including
+		// events about cluster objects whose reference namespace is empty.
+		if scope.Workload != "" {
+			matched, gap := scope.MatchObject(ref)
+			if !matched {
+				return nil
+			}
+			if gap != nil {
+				sourceGap(&result, gap.Code, gap.Message)
+			}
 		}
 		result.Summary.Matched++
-		if gap != nil {
-			sourceGap(&result, gap.Code, gap.Message)
-		}
 		candidates := []struct{ basis, value string }{{"lastTimestamp", event.Last}, {"eventTime", event.EventTime}, {"firstTimestamp", event.First}, {"metadata.creationTimestamp", event.Metadata.Created}}
 		if event.Series != nil {
 			candidates = append([]struct{ basis, value string }{{"series.lastObservedTime", event.Series.Last}}, candidates...)
