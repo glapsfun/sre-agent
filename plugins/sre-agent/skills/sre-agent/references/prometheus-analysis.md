@@ -50,8 +50,10 @@ inside fresh external-data markers; API errors and warnings are redacted and
 marked too. Warnings fail the query even with HTTP 200; info annotations are
 retained. No failed query returns a successful empty or partial report.
 
-Responses are limited to 8 MiB and 65,536 JSON structural tokens, with explicit
-errors on excess. Numeric sample timestamps support exact nanosecond Unix
+Responses are limited to 8 MiB. Matrix series are decoded separately, with a
+65,536 JSON structural-token limit per series or metadata field and explicit
+errors on excess. This admits 500 series over the default one-hour, 30-second
+grid without raising discovery's response-work limit. Numeric sample timestamps support exact nanosecond Unix
 times within the int64 nanosecond range. Native histogram samples are rejected;
 use a float conversion query such as `histogram_sum()`, `histogram_count()`, or
 `histogram_avg()` before summarizing them.

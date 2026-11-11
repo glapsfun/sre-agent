@@ -280,14 +280,18 @@ type apiResponse struct {
 	ErrorType string   `json:"errorType"`
 	Warnings  []string `json:"warnings"`
 	Infos     []string `json:"infos"`
-	Data      *struct {
-		ResultType string `json:"resultType"`
-		Result     []struct {
-			Metric     map[string]json.RawMessage `json:"metric"`
-			Values     [][]json.RawMessage        `json:"values"`
-			Histograms json.RawMessage            `json:"histograms"`
-		} `json:"result"`
-	} `json:"data"`
+	Data      *apiData `json:"data"`
+}
+
+type apiData struct {
+	ResultType string      `json:"resultType"`
+	Result     []apiSeries `json:"result"`
+}
+
+type apiSeries struct {
+	Metric     map[string]json.RawMessage `json:"metric"`
+	Values     [][]json.RawMessage        `json:"values"`
+	Histograms json.RawMessage            `json:"histograms"`
 }
 
 func externalError(ctx context.Context, redactor safety.Redactor, prefix, text string) error {
@@ -304,7 +308,7 @@ func externalError(ctx context.Context, redactor safety.Redactor, prefix, text s
 
 func decode(ctx context.Context, body []byte, start, end time.Time, step time.Duration, top int, redactor safety.Redactor) (Report, error) {
 	var api apiResponse
-	if err := safety.DecodeJSON(ctx, string(body), &api); err != nil {
+	if err := decodeResponse(ctx, body, &api); err != nil {
 		if ctx.Err() != nil {
 			return Report{}, ctx.Err()
 		}

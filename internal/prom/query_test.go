@@ -153,6 +153,97 @@ func TestTopSeriesStableAndOmissions(t *testing.T) {
 	}
 }
 
+func defaultGridMatrix() string {
+	var body strings.Builder
+	body.WriteString(`{"status":"success","data":{"resultType":"matrix","result":[`)
+	for series := 0; series < 500; series++ {
+		if series > 0 {
+			body.WriteByte(',')
+		}
+		fmt.Fprintf(&body, `{"metric":{"job":"job-%03d","token":"hidden-label"},"values":[`, series)
+		for step := 0; step <= 120; step++ {
+			if step > 0 {
+				body.WriteByte(',')
+			}
+			value := 0
+			if step >= 60 {
+				value = series
+			}
+			fmt.Fprintf(&body, `[%d,"%d"]`, step*30, value)
+		}
+		body.WriteString(`]}`)
+	}
+	body.WriteString(`]}}`)
+	return body.String()
+}
+
+func TestDefaultGrid500SeriesHTTPAndProxy(t *testing.T) {
+	body := defaultGridMatrix()
+	t.Logf("500 series, 60,500 samples, %d response bytes", len(body))
+	installKubectl(t, body, oneService, false)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start") != "0" || r.URL.Query().Get("end") != "3600" || r.URL.Query().Get("step") != "30" {
+			t.Errorf("default grid: %s", r.URL)
+		}
+		fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+	s := Service{Now: func() time.Time { return time.Unix(3600, 0) }}
+	var direct Report
+	for _, endpoint := range []string{server.URL, ""} {
+		report, err := s.Query(context.Background(), Options{URL: endpoint, Query: "up", Top: 10})
+		if err != nil {
+			t.Fatalf("endpoint %q: %v", endpoint, err)
+		}
+		if len(report.Series) != 10 || report.OmittedSeries != 490 {
+			t.Fatalf("listed=%d omitted=%d", len(report.Series), report.OmittedSeries)
+		}
+		for i, series := range report.Series {
+			if series.Labels["job"] != fmt.Sprintf("job-%03d", 499-i) || series.Labels["token"] != "[REDACTED]" || series.MissingSteps != 0 || series.Change == nil || !series.Change.Time.Equal(time.Unix(1800, 0)) {
+				t.Fatalf("series %d: %+v", i, series)
+			}
+		}
+		if endpoint != "" {
+			direct = report
+		} else if !reflect.DeepEqual(direct, report) {
+			t.Fatal("default-grid transport summaries differ")
+		}
+	}
+}
+
+func TestMatrixDecoderRetainsValidationAndBounds(t *testing.T) {
+	full := defaultGridMatrix()
+	dense := `[` + strings.Repeat(`0,`, safety.MaxJSONStructure) + `0]`
+	for _, tc := range []struct{ name, body, want string }{
+		{"late warning", strings.TrimSuffix(full, `}`) + `,"warnings":["partial response token=hidden"]}`, "warning"},
+		{"late invalid metadata", strings.TrimSuffix(full, `}`) + `,"infos":123}`, "invalid"},
+		{"truncated matrix", full[:len(full)-3], "invalid"},
+		{"trailing matrix", full + ` {}`, "invalid"},
+		{"result type", `{"status":"success","data":{"resultType":"matrix","result":{}}}`, "invalid"},
+		{"null data", `{"status":"success","data":null}`, "invalid"},
+		{"dense series", `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[],"unknown":` + dense + `}]}}`, "65536"},
+		{"dense metadata", `{"status":"success","unknown":` + dense + `,"data":{"resultType":"matrix","result":[]}}`, "65536"},
+		{"oversize", strings.Repeat(" ", safety.MaxResponseBytes) + `{}`, "8 MiB"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, err := decode(context.Background(), []byte(tc.body), time.Unix(0, 0), time.Unix(3600, 0), 30*time.Second, 10, safety.NewRedactor())
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hidden") || len(report.Series) != 0 {
+				t.Fatalf("report=%+v error=%v", report, err)
+			}
+		})
+	}
+}
+
+func TestLargeMatrixDecodeDeadline(t *testing.T) {
+	body := []byte(defaultGridMatrix())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	report, err := decode(ctx, body, time.Unix(0, 0), time.Unix(3600, 0), 30*time.Second, 10, safety.NewRedactor())
+	if !errors.Is(err, context.DeadlineExceeded) || len(report.Series) != 0 {
+		t.Fatalf("report=%+v error=%v", report, err)
+	}
+}
+
 func installKubectl(t *testing.T, body, services string, denied bool) string {
 	t.Helper()
 	dir := t.TempDir()
