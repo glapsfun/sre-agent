@@ -194,7 +194,9 @@ func argoKube(body string) gitOpsKube {
 }
 
 func TestArgoAssociationAndHistory(t *testing.T) {
-	r := CollectArgo(context.Background(), gitOpsScope(), argoKube(fixture(t, "argo")))
+	k := argoKube(fixture(t, "argo"))
+	k.runs["get deployment.apps api --namespace=ns --output=json"] = executil.Result{Stdout: `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"ns","uid":"deploy-api"}}`}
+	r := CollectArgo(context.Background(), gitOpsScope(), k)
 	if r.Summary.Matched != 1 || len(r.Entries) != 2 || len(r.Errors) != 0 || !hasGap(r, "association") || !hasGap(r, "history") || !hasGap(r, "timestamp") {
 		t.Fatalf("argo=%+v", r)
 	}
@@ -297,24 +299,45 @@ func TestArgoAssociationDistinctDescendantsAndConflicts(t *testing.T) {
 }
 
 func TestArgoAssociationTrackingAlongsideIndependentDescendant(t *testing.T) {
-	objects := argoObjects(t)
-	a, b := objects[0], objects[1]
-	a["status"].(map[string]any)["resources"] = []any{}
-	b["status"].(map[string]any)["resources"] = []any{map[string]any{"group": "", "kind": "Pod", "namespace": "ns", "name": "api-pod"}}
-	s := gitOpsScope()
-	s.Objects["pod-api"] = Object{APIVersion: "v1", Kind: "Pod", Namespace: "ns", Name: "api-pod", UID: "pod-api"}
-	s.Related["pod-api"] = true
-	k := argoKube(eventList(a, b))
-	k.runs["get deployment.apps api --namespace=ns --output=json"] = executil.Result{Stdout: `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"ns","uid":"deploy-api","annotations":{"argocd.argoproj.io/tracking-id":"api:apps/Deployment:ns/api","argocd.argoproj.io/installation-id":"installation-a"}}}`}
-	k.runs["get configmap argocd-cm --namespace=argo-a --output=jsonpath={.data.installationID}"] = executil.Result{Stdout: "installation-a"}
-	r := CollectArgo(context.Background(), s, k)
-	if r.Summary.Matched != 2 || len(r.Entries) != 3 || len(r.Errors) != 0 {
-		t.Fatalf("tracking history suppressed by independent descendant membership: %+v", r)
-	}
-	k.runs["get deployment.apps api --namespace=ns --output=json"] = executil.Result{Err: errors.New("metadata unavailable")}
-	r = CollectArgo(context.Background(), s, k)
-	if r.Summary.Matched != 1 || len(r.Entries) != 1 || r.Entries[0].Object.UID != "a-gateway" || len(r.Errors) != 1 {
-		t.Fatalf("failed tracking lookup erased independent descendant history: %+v", r)
+	for _, tc := range []struct {
+		name      string
+		resources []any
+	}{
+		{"empty", []any{}},
+		{"unrelated", []any{map[string]any{"group": "", "kind": "ConfigMap", "namespace": "ns", "name": "settings"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := argoObjects(t)
+			a, b := objects[0], objects[1]
+			a["status"].(map[string]any)["resources"] = tc.resources
+			b["status"].(map[string]any)["resources"] = []any{map[string]any{"group": "", "kind": "Pod", "namespace": "ns", "name": "api-pod"}}
+			s := gitOpsScope()
+			s.Objects["pod-api"] = Object{APIVersion: "v1", Kind: "Pod", Namespace: "ns", Name: "api-pod", UID: "pod-api"}
+			s.Related["pod-api"] = true
+			k := argoKube(eventList(a, b))
+			k.runs["get deployment.apps api --namespace=ns --output=json"] = executil.Result{Stdout: `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"ns","uid":"deploy-api","annotations":{"argocd.argoproj.io/tracking-id":"api:apps/Deployment:ns/api","argocd.argoproj.io/installation-id":"installation-a"}}}`}
+			k.runs["get configmap argocd-cm --namespace=argo-a --output=jsonpath={.data.installationID}"] = executil.Result{Stdout: "installation-a"}
+			r := CollectArgo(context.Background(), s, k)
+			if r.Summary.Matched != 2 || len(r.Entries) != 3 || len(r.Errors) != 0 {
+				t.Fatalf("tracking history suppressed by independent descendant membership: %+v", r)
+			}
+			k.runs["get configmap argocd-cm --namespace=argo-a --output=jsonpath={.data.installationID}"] = executil.Result{Err: errors.New("installation unavailable")}
+			r = CollectArgo(context.Background(), s, k)
+			if r.Summary.Matched != 1 || len(r.Entries) != 1 || r.Entries[0].Object.UID != "a-gateway" || len(r.Errors) != 1 {
+				t.Fatalf("failed installation lookup erased independent descendant history: %+v", r)
+			}
+			k.runs["get deployment.apps api --namespace=ns --output=json"] = executil.Result{Err: errors.New("metadata unavailable")}
+			r = CollectArgo(context.Background(), s, k)
+			if r.Summary.Matched != 1 || len(r.Entries) != 1 || r.Entries[0].Object.UID != "a-gateway" || len(r.Errors) != 1 {
+				t.Fatalf("failed tracking lookup erased independent descendant history: %+v", r)
+			}
+			a["spec"].(map[string]any)["destination"].(map[string]any)["server"] = "https://remote.example"
+			k.lists["applications.argoproj.io"] = eventList(a, b)
+			r = CollectArgo(context.Background(), s, k)
+			if r.Summary.Matched != 1 || len(r.Entries) != 1 || r.Entries[0].Object.UID != "a-gateway" || len(r.Errors) != 0 || !hasGap(r, "association") {
+				t.Fatalf("remote candidate triggered tracking or erased independent descendant history: %+v", r)
+			}
+		})
 	}
 }
 

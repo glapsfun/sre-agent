@@ -381,8 +381,6 @@ func CollectArgo(ctx context.Context, scope Scope, kube KubeRunner) SourceResult
 	members := make([]bool, len(apps))
 	independent := make([]bool, len(apps))
 	claims := map[[4]string][]int{}
-	memberCount, eligibleCount := 0, 0
-	missingResources := false
 	for i, app := range apps {
 		if err := ctx.Err(); err != nil {
 			return kubeFailure("argocd", err)
@@ -394,8 +392,6 @@ func CollectArgo(ctx context.Context, scope Scope, kube KubeRunner) SourceResult
 			continue
 		}
 		eligible[i] = true
-		eligibleCount++
-		missingResources = missingResources || len(app.Status.Resources) == 0
 		seen := map[[4]string]bool{}
 		for _, ref := range app.Status.Resources {
 			if gitOpsMatches(scope, ref.Group, ref.Kind, ref.Namespace, ref.Name) {
@@ -407,23 +403,22 @@ func CollectArgo(ctx context.Context, scope Scope, kube KubeRunner) SourceResult
 				}
 			}
 		}
-		if members[i] {
-			memberCount++
-		}
 	}
-	conflict := false
 	for _, indexes := range claims {
 		if len(indexes) == 1 {
 			independent[indexes[0]] = true
 		} else {
-			conflict = true
 			o.gap("association", "multiple Argo Applications claim the same resource identity")
 		}
 	}
-	// Separate descendants can have separate managers. Only overlapping claims
-	// need tracking proof; an independent membership remains usable if it fails.
+	// Incomplete resource status and overlapping claims can need tracking proof;
+	// an independent membership remains usable if the lookup fails.
+	needsTracking := false
+	for i := range apps {
+		needsTracking = needsTracking || (eligible[i] && !independent[i])
+	}
 	var tracking *argoTracking
-	if scope.Workload != "" && eligibleCount > 0 && (memberCount == 0 || conflict || missingResources) {
+	if scope.Workload != "" && needsTracking {
 		tracking = readArgoTracking(o, kube)
 	}
 	installation := map[string]struct {
