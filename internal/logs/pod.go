@@ -70,11 +70,16 @@ func FoldPod(ctx context.Context, opts PodOptions) (Report, error) {
 		done <- result
 	}()
 	report, foldErr := Fold(reader, opts.Options)
+	canceledForFold := foldErr != nil && ctx.Err() == nil
 	_ = reader.Close()
 	if foldErr != nil {
 		cancel()
 	}
 	result := <-done
+	// Cleanup cancellation must not hide the input error that triggered it.
+	if canceledForFold && errors.Is(result.Err, context.Canceled) {
+		return Report{}, foldErr
+	}
 	if result.Err != nil {
 		return Report{}, fmt.Errorf("collect pod logs: %w", result.Err)
 	}

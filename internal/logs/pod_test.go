@@ -2,12 +2,15 @@ package logs
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/glapsfun/sre-agent/internal/safety"
 )
 
 func fakeKubectl(t *testing.T, body string) string {
@@ -47,12 +50,56 @@ func TestFoldPodPinnedArgumentsAndParity(t *testing.T) {
 func TestFoldPodFailureAndValidation(t *testing.T) {
 	fakeKubectl(t, "printf 'INFO partial\\n'\nprintf 'password=pod-secret' >&2\nexit 7\n")
 	report, err := FoldPod(context.Background(), PodOptions{Context: "test", Namespace: "ns", Pod: "app"})
-	if err == nil || report.TotalLines != 0 || strings.Contains(err.Error(), "pod-secret") {
+	if err == nil || report.TotalLines != 0 || strings.Contains(err.Error(), "pod-secret") || !strings.Contains(err.Error(), "collect pod logs: external command failed: exit status 7") {
 		t.Fatalf("%+v %v", report, err)
 	}
 	for _, opts := range []PodOptions{{Pod: "app"}, {Namespace: "ns"}, {Namespace: "ns", Pod: "--help"}, {Namespace: "ns", Pod: "app", Container: "--follow"}, {Namespace: "ns", Pod: "app", Since: -time.Second}} {
 		if _, err := FoldPod(context.Background(), opts); err == nil {
 			t.Fatalf("accepted %+v", opts)
 		}
+	}
+}
+
+func TestFoldPodOversizedLinePreservesCause(t *testing.T) {
+	dir := fakeKubectl(t, "/bin/cat \"$LOG_FILE\"\n/bin/sleep 10\n")
+	path := filepath.Join(dir, "logs")
+	if err := os.WriteFile(path, []byte("INFO partial\n"+strings.Repeat("x", safety.MaxResponseBytes+1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOG_FILE", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	report, err := FoldPod(ctx, PodOptions{Context: "test", Namespace: "ns", Pod: "app"})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("consumer failure did not stop producer promptly: %s, err=%v", elapsed, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "read logs: bufio.Scanner: token too long") {
+		t.Fatalf("lost oversized-line cause: %v", err)
+	}
+	if !reflect.DeepEqual(report, Report{}) {
+		t.Fatalf("returned partial report: %+v", report)
+	}
+}
+
+func TestFoldPodRetainsCallerCancellation(t *testing.T) {
+	fakeKubectl(t, "/bin/sleep 10\n")
+	for _, want := range []error{context.DeadlineExceeded, context.Canceled} {
+		t.Run(want.Error(), func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if want == context.DeadlineExceeded {
+				ctx, cancel = context.WithTimeout(context.Background(), 30*time.Millisecond)
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+				timer := time.AfterFunc(30*time.Millisecond, cancel)
+				defer timer.Stop()
+			}
+			defer cancel()
+			report, err := FoldPod(ctx, PodOptions{Context: "test", Namespace: "ns", Pod: "app"})
+			if !errors.Is(err, want) || !reflect.DeepEqual(report, Report{}) {
+				t.Fatalf("caller cancellation lost: report=%+v err=%v", report, err)
+			}
+		})
 	}
 }
