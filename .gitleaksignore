@@ -1,0 +1,4 @@
+# Synthetic PEM redaction fixture with literal body "sensitive", not key material.
+071c7a067ce419826c469c92b4d49a21a1e1c8fd:internal/safety/safety_test.go:private-key:27
+# Synthetic context-redaction parity fixture with literal body "private-content".
+ccbde6126cf525c9958c2526766b05f6e43ecb85:internal/safety/safety_test.go:private-key:107
