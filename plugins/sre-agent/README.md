@@ -45,8 +45,27 @@ Run `skills/sre-agent/scripts/sre version` from this plugin directory. The
 launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
 on amd64 or arm64. It requires Bash, curl, and either sha256sum or shasum.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
-Use `sre version --format text` for a short text view. Only `version` is
-implemented so far; the existing investigation scripts remain available.
+Use `--format text` for a readable text view. Source builds provide `version`,
+`discover`, and `logs fold`; the existing investigation scripts remain available.
+The pinned release may not yet include the source build's newer commands.
+
+`sre logs fold` reads stdin and returns redacted patterns, counts, first/last
+timestamps, levels, and samples. For example:
+
+```bash
+sre logs fold --max-patterns 20 < app.log
+sre logs fold --context prod --namespace payments --pod checkout-abc \
+  --container app --previous --since 1h --format text
+```
+
+Errors sort first, then warnings, then other levels; rarer patterns sort first
+within each group. The default limit is 20 patterns. `omitted_patterns` and
+`omitted_lines` account for everything outside the limit. Samples and templates
+carry fresh external-data markers. Pod collection streams a finite snapshot,
+enables timestamps, and uses a 30-second deadline. It selects explicit context,
+then `SRE_KUBE_CONTEXT`, then the current context without changing it.
+See [log folding details](skills/sre-agent/references/logs-investigation.md#fold-repeated-lines)
+for masking, timestamp handling, and limits.
 
 The cache lives under `CLAUDE_PLUGIN_DATA/sre-agent` when set, otherwise
 `XDG_CACHE_HOME/sre-agent`, otherwise `HOME/.cache/sre-agent`. Each version and

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -32,15 +33,30 @@ func NewKubernetes(ctx context.Context, runner Runner, explicit string) (*Kubern
 }
 
 func (k *Kubernetes) Run(ctx context.Context, args ...string) Result {
+	if err := validatePinnedArgs(args); err != nil {
+		return Result{Err: err}
+	}
+	return k.runner.Run(ctx, "kubectl", append([]string{"--context", k.context}, args...)...)
+}
+
+// Stream has Runner.Stream's raw-stdout contract with a pinned cluster target.
+func (k *Kubernetes) Stream(ctx context.Context, output io.Writer, args ...string) Result {
+	if err := validatePinnedArgs(args); err != nil {
+		return Result{Err: err}
+	}
+	return k.runner.Stream(ctx, output, "kubectl", append([]string{"--context", k.context}, args...)...)
+}
+
+func validatePinnedArgs(args []string) error {
 	for _, arg := range args {
 		for _, flag := range []string{"--context", "--server", "--kubeconfig", "--cluster", "--user"} {
 			if arg == flag || strings.HasPrefix(arg, flag+"=") {
-				return Result{Err: errors.New("Kubernetes context and target are already pinned")}
+				return errors.New("Kubernetes context and target are already pinned")
 			}
 		}
 		if strings.HasPrefix(arg, "-s") && !strings.HasPrefix(arg, "--") {
-			return Result{Err: errors.New("Kubernetes server is already pinned")}
+			return errors.New("Kubernetes server is already pinned")
 		}
 	}
-	return k.runner.Run(ctx, "kubectl", append([]string{"--context", k.context}, args...)...)
+	return nil
 }
