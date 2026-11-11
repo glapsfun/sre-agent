@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,6 +246,85 @@ func TestMigrationDeadlineRollsBackAndReleasesConnection(t *testing.T) {
 	if err := ApplyMigrations(t.Context(), s.DB(), []Migration{{1, ""}, {2, "CREATE TABLE recovered (value INTEGER)"}}); err != nil {
 		t.Fatalf("connection unusable after cancellation: %v", err)
 	}
+}
+
+func TestMigrationBeginCancellationReleasesWriterAndPool(t *testing.T) {
+	for _, failRollback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rollback_failure=%t", failRollback), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "test.db")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			u := url.URL{Scheme: "file", Path: path}
+			db := sql.OpenDB(&beginCancelConnector{
+				driver: &sqlite.Driver{}, dsn: u.String(), cancel: cancel, failRollback: failRollback,
+			})
+			db.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = db.Close() })
+			migration := []Migration{{1, "CREATE TABLE migrated (value INTEGER)"}}
+			if err := ApplyMigrations(ctx, db, migration); !errors.Is(err, context.Canceled) {
+				t.Fatalf("BEGIN cancellation = %v", err)
+			}
+
+			other := rawDB(t, path)
+			if _, err := other.ExecContext(t.Context(), "CREATE TABLE other_writer (value INTEGER)"); err != nil {
+				t.Errorf("BEGIN cancellation retained writer lock: %v", err)
+			}
+			if err := ApplyMigrations(t.Context(), db, migration); err != nil {
+				t.Fatalf("pool unusable after BEGIN cancellation: %v", err)
+			}
+			execSQL(t, db, "INSERT INTO migrated VALUES (42)")
+			if got := queryInt(t, other, "SELECT value FROM migrated"); got != 42 {
+				t.Errorf("reused pool did not commit its write: %d", got)
+			}
+		})
+	}
+}
+
+// The real driver can lose an early interrupt, successfully execute BEGIN,
+// then return ctx.Err(). Inject that boundary outcome without a scheduling race.
+type beginCancelConnector struct {
+	driver       *sqlite.Driver
+	dsn          string
+	cancel       context.CancelFunc
+	once         sync.Once
+	failRollback bool
+}
+
+func (c *beginCancelConnector) Connect(context.Context) (driver.Conn, error) {
+	conn, err := c.driver.Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	return &beginCancelConn{sqliteTestConn: conn.(sqliteTestConn), connector: c}, nil
+}
+
+func (c *beginCancelConnector) Driver() driver.Driver { return c.driver }
+
+type sqliteTestConn interface {
+	driver.Conn
+	driver.ExecerContext
+	driver.QueryerContext
+	driver.SessionResetter
+	driver.Validator
+}
+
+type beginCancelConn struct {
+	sqliteTestConn
+	connector *beginCancelConnector
+}
+
+func (c *beginCancelConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if query == "ROLLBACK" && c.connector.failRollback {
+		return nil, errors.New("injected rollback failure")
+	}
+	result, err := c.sqliteTestConn.ExecContext(ctx, query, args)
+	if query == "BEGIN IMMEDIATE" && err == nil {
+		c.connector.once.Do(func() {
+			c.connector.cancel()
+			result, err = nil, ctx.Err()
+		})
+	}
+	return result, err
 }
 
 func TestCanceledContextsAndSafeErrors(t *testing.T) {

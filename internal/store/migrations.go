@@ -35,12 +35,9 @@ func ApplyMigrations(ctx context.Context, db *sql.DB, migrations []Migration) er
 		return storeError("acquire migration connection", err)
 	}
 	defer conn.Close()
-	// Lock before reading the version so competing processes cannot both
-	// decide the same migrations are pending and then race to upgrade.
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return storeError("lock schema migration", err)
-	}
 	committed := false
+	// BEGIN can acquire the lock even when the driver reports cancellation.
+	// Install cleanup first so that connection cannot retain a transaction.
 	defer func() {
 		if committed {
 			return
@@ -53,6 +50,11 @@ func ApplyMigrations(ctx context.Context, db *sql.DB, migrations []Migration) er
 			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
+	// Lock before reading the version so competing processes cannot both
+	// decide the same migrations are pending and then race to upgrade.
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return storeError("lock schema migration", err)
+	}
 	var version int
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return storeError("read schema version", err)
