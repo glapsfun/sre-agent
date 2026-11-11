@@ -170,3 +170,42 @@ func TestFoldTimeFormatsAndUnknown(t *testing.T) {
 		t.Fatalf("bad times %+v", p)
 	}
 }
+
+func TestFoldSpaceSeparatedZonedTimes(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, first, last string
+	}{
+		{
+			"UTC",
+			"2026-11-11 13:00:00Z ERROR retry\n2026-11-11 11:00:00.500Z ERROR retry\n2026-11-11 15:00:00Z ERROR retry",
+			"2026-11-11T11:00:00.5Z", "2026-11-11T15:00:00Z",
+		},
+		{
+			"colon offsets",
+			"2026-11-11 13:00:00+02:00 ERROR retry\n2026-11-11 12:00:00-01:00 ERROR retry\n2026-11-11 14:00:00+04:00 ERROR retry",
+			"2026-11-11T10:00:00Z", "2026-11-11T13:00:00Z",
+		},
+		{
+			"compact offsets",
+			"2026-11-11 13:00:00,500+0200 ERROR retry\n2026-11-11 12:00:00,250-0100 ERROR retry\n2026-11-11 14:00:00,750+0400 ERROR retry",
+			"2026-11-11T10:00:00.75Z", "2026-11-11T13:00:00.25Z",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, err := Fold(strings.NewReader(tc.input), Options{})
+			if err != nil || report.TotalLines != 3 || len(report.Patterns) != 1 {
+				t.Fatalf("report=%+v err=%v", report, err)
+			}
+			p := report.Patterns[0]
+			if p.Template != "<*> ERROR retry" || p.Count != 3 || p.Level != "error" {
+				t.Fatalf("changed pattern: %+v", p)
+			}
+			if p.FirstSeen == nil || p.LastSeen == nil {
+				t.Fatalf("missing zoned timestamps: first=%v last=%v", p.FirstSeen, p.LastSeen)
+			}
+			if p.FirstSeen.Format(time.RFC3339Nano) != tc.first || p.LastSeen.Format(time.RFC3339Nano) != tc.last {
+				t.Fatalf("times=%s..%s want=%s..%s", p.FirstSeen, p.LastSeen, tc.first, tc.last)
+			}
+		})
+	}
+}

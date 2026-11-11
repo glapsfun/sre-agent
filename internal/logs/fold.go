@@ -117,8 +117,8 @@ func Fold(input io.Reader, opts Options) (Report, error) {
 }
 
 func parseTime(line string) *time.Time {
-	value := timeField.FindString(line)
-	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05Z0700", "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+	value := strings.Replace(timeField.FindString(line), " ", "T", 1)
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05Z0700", "2006-01-02T15:04:05"} {
 		if stamp, err := time.Parse(layout, value); err == nil {
 			stamp = stamp.UTC()
 			return &stamp
