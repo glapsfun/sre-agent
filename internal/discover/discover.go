@@ -219,9 +219,11 @@ func (p *probe) check(label string, result executil.Result) bool {
 		return true
 	}
 	status := Error
-	if errors.Is(result.Err, safety.ErrResponseTooLarge) {
-		p.fail(Error, label+": "+safety.ErrResponseTooLarge.Error())
-		return false
+	for _, bound := range []error{safety.ErrResponseTooLarge, safety.ErrResponseComplexity} {
+		if errors.Is(result.Err, bound) {
+			p.fail(Error, label+": "+bound.Error())
+			return false
+		}
 	}
 	if errors.Is(result.Err, context.DeadlineExceeded) || errors.Is(result.Err, context.Canceled) {
 		status = Timeout
@@ -265,7 +267,7 @@ func (p *probe) read(label string, dest any, name string, args ...string) bool {
 		return p.check(label, executil.Result{Err: err})
 	}
 	err = safety.DecodeJSON(p.ctx, data, dest)
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, safety.ErrResponseTooLarge) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, safety.ErrResponseTooLarge) || errors.Is(err, safety.ErrResponseComplexity) {
 		return p.check(label, executil.Result{Err: err})
 	}
 	if strings.TrimSpace(data) == "null" || err != nil {

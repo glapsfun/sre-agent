@@ -156,3 +156,21 @@ func TestOversizedOutputFailsWithoutTruncatedEvidence(t *testing.T) {
 		t.Fatalf("accepted truncated output: %v", result.Err)
 	}
 }
+
+func TestStructuredOutputDeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "response.json")
+	input := "[" + strings.Repeat(`{"x":0},`, 900000-1) + `{"x":0}]`
+	if err := os.WriteFile(path, []byte(input), 0600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result := (Runner{Timeout: 100 * time.Millisecond}).Run(context.Background(), "cat", path)
+	elapsed := time.Since(start)
+	t.Logf("dense executor output: elapsed=%s err=%v", elapsed, result.Err)
+	if elapsed > 350*time.Millisecond {
+		t.Fatal("dense output redaction exceeded deadline")
+	}
+	if result.Err == nil || result.Stdout != "" {
+		t.Fatal("rejected structured output produced evidence")
+	}
+}

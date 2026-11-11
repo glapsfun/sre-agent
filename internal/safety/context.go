@@ -17,6 +17,47 @@ const MaxResponseBytes = 8 << 20
 
 var ErrResponseTooLarge = errors.New("external response exceeds 8 MiB limit")
 
+// Bound conversion work as well as bytes: small JSON objects allocate far more
+// than a similarly sized string. This admits 16,000 small objects and the
+// discovery 5,000-node fixture without an uninterruptible large conversion.
+const MaxJSONStructure = 65536
+
+var ErrResponseComplexity = errors.New("external JSON response exceeds 65536 structural-token limit")
+
+func checkJSONWork(ctx context.Context, text string) error {
+	quoted, escaped, count := false, false, 0
+	for i := 0; i < len(text); i++ {
+		if i%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quoted {
+			switch text[i] {
+			case '\\':
+				escaped = true
+			case '"':
+				quoted = false
+			}
+			continue
+		}
+		switch text[i] {
+		case '"':
+			quoted = true
+		case '{', '}', '[', ']', ',', ':':
+			count++
+			if count > MaxJSONStructure {
+				return ErrResponseComplexity
+			}
+		}
+	}
+	return ctx.Err()
+}
+
 type contextReader struct {
 	ctx    context.Context
 	reader *strings.Reader
@@ -39,13 +80,16 @@ func (r *contextReader) ReadRune() (rune, int, error) {
 }
 
 // DecodeJSON checks cancellation while scanning and rejects trailing values.
-// The byte limit bounds encoding/json's final synchronous conversion step.
+// Byte and structural-work limits bound the final synchronous conversion step.
 func DecodeJSON(ctx context.Context, text string, dest any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if len(text) > MaxResponseBytes {
 		return ErrResponseTooLarge
+	}
+	if err := checkJSONWork(ctx, text); err != nil {
+		return err
 	}
 	decoder := json.NewDecoder(&contextReader{ctx: ctx, reader: strings.NewReader(text)})
 	decoder.UseNumber()
@@ -85,6 +129,9 @@ func (r Redactor) RedactContext(ctx context.Context, text string) (string, error
 		err := DecodeJSON(ctx, text, &value)
 		if ctx.Err() != nil {
 			return "", ctx.Err()
+		}
+		if errors.Is(err, ErrResponseComplexity) {
+			return "", err
 		}
 		if err == nil {
 			value, err = r.redactValueContext(ctx, value)

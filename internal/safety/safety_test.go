@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRedactedJSONRemainsParseable(t *testing.T) {
@@ -144,5 +146,69 @@ func TestContextRedactionPreservesLiteralSecretBytes(t *testing.T) {
 	got, err := NewRedactor(secret).RedactContext(context.Background(), "prefix "+secret+" suffix")
 	if err != nil || got != "prefix [REDACTED] suffix" {
 		t.Fatalf("literal secret changed: %q %v", got, err)
+	}
+}
+
+func TestStructuredDecodeDeadlineRejectsExcessiveWork(t *testing.T) {
+	input := "[" + strings.Repeat(`{"x":0},`, 900000-1) + `{"x":0}]`
+	for _, redact := range []bool{false, true} {
+		t.Run(fmt.Sprint("redact=", redact), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			var value any
+			start := time.Now()
+			var err error
+			if redact {
+				var output string
+				output, err = NewRedactor().RedactContext(ctx, input)
+				if output != "" {
+					t.Fatal("rejected response returned evidence")
+				}
+			} else {
+				err = DecodeJSON(ctx, input, &value)
+			}
+			elapsed := time.Since(start)
+			t.Logf("input_bytes=%d budget=100ms elapsed=%s err=%v", len(input), elapsed, err)
+			if elapsed > 350*time.Millisecond {
+				t.Fatal("structured conversion exceeded deadline")
+			}
+			if err == nil || value != nil {
+				t.Fatal("over-complex response produced partial evidence")
+			}
+		})
+	}
+}
+
+func TestAcceptedDenseJSONConversion(t *testing.T) {
+	input := "[" + strings.Repeat(`{"x":0},`, 16000-1) + `{"x":0}]`
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	var value []struct {
+		X int `json:"x"`
+	}
+	start := time.Now()
+	err := DecodeJSON(ctx, input, &value)
+	t.Logf("accepted 16000 objects: bytes=%d elapsed=%s err=%v", len(input), time.Since(start), err)
+	if err != nil || len(value) != 16000 {
+		t.Fatalf("bounded dense response rejected: len=%d err=%v", len(value), err)
+	}
+}
+
+func TestJSONWorkBoundPreservesQuotedDataAndDestination(t *testing.T) {
+	text := strings.Repeat(`"[,:]{}\`, 20000)
+	input, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := DecodeJSON(context.Background(), string(input), &got); err != nil || got["text"] != text {
+		t.Fatalf("quoted punctuation affected structural bound: %v", err)
+	}
+	value := struct {
+		X int `json:"x"`
+	}{X: 7}
+	excessive := "[" + strings.Repeat(`{"x":0},`, 20000-1) + `{"x":0}]`
+	if err := DecodeJSON(context.Background(), excessive, &value); !errors.Is(err, ErrResponseComplexity) || value.X != 7 {
+		t.Fatalf("rejected evidence changed destination: %+v %v", value, err)
 	}
 }

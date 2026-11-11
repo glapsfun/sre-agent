@@ -57,9 +57,12 @@ counts in gaps. All returned nodes are parsed before provider detection; large
 node lists are never cut before inspecting GKE labels. Use the fallback
 scripts or scoped kubectl reads if an inventory summary omitted your target.
 GCP project discovery requests at most 20 projects, matching the script.
-Each external stdout/stderr response is limited to 8 MiB. An oversized response
-stops its producer and becomes an explicit error gap; truncated JSON is never
-used as evidence. Parsing and redaction share the probe deadline. If either
+Each external stdout/stderr response is limited to 8 MiB. JSON responses also
+have a limit of 65,536 structural delimiters (`{`, `}`, `[`, `]`, `,`, `:`
+outside quoted strings), bounding conversion work for dense object lists.
+Oversized output stops its producer; over-complex JSON is rejected before
+conversion. Both become explicit error gaps, never truncated evidence.
+Parsing and redaction share the probe deadline. If either
 expires, the probe keeps facts completed by earlier commands and reports a
 timeout without returning unfinished output.
 

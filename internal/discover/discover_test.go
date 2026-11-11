@@ -409,3 +409,23 @@ func TestInjectedRunnerRejectsOversizedDiagnostics(t *testing.T) {
 		t.Fatalf("unbounded injected diagnostics: %+v", p)
 	}
 }
+
+func TestStructuredResponseDeadlineKeepsEarlierFindings(t *testing.T) {
+	cleanEnv(t)
+	fixtures := clusterFixtures()
+	fixtures["kubectl --context original get nodes -o json"] = jsonResult(`{"items":[` + strings.Repeat(`{"x":0},`, 900000-1) + `{"x":0}]}`)
+	start := time.Now()
+	report, err := fixtureService(&fixtureRunner{fixtures: fixtures}, "az").Discover(context.Background(), Options{Only: []string{"env"}, Context: "original", Timeout: 100 * time.Millisecond})
+	elapsed := time.Since(start)
+	t.Logf("dense node response: elapsed=%s", elapsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > 350*time.Millisecond {
+		t.Fatal("dense response delayed report")
+	}
+	p := report.Probes["env"]
+	if (p.Status != Error && p.Status != Timeout) || p.Findings.Env.GKE != nil || p.Findings.Env.ServerVersion != "v1.33.0" {
+		t.Fatal("rejected response implied absence or lost earlier evidence")
+	}
+}
