@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/glapsfun/sre-agent/internal/executil"
@@ -487,4 +488,131 @@ func TestAWSExitMessageWithoutTypedStatusIsStillError(t *testing.T) {
 	if report.Probes["aws"].Status != Error {
 		t.Fatal("inferred missing region from error text")
 	}
+}
+
+// A timer callback can still be pending after its fixed deadline has passed.
+type pendingDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c pendingDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestPendingDeadlinePreservesEarlierFacts(t *testing.T) {
+	cleanEnv(t)
+	for _, tc := range []struct {
+		name   string
+		delay  time.Duration
+		status Status
+		region string
+	}{
+		{"late region", 30 * time.Millisecond, Timeout, ""},
+		{"timely region", 10 * time.Millisecond, OK, "eu-west-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				fixtures := &fixtureRunner{fixtures: cloudFixtures()}
+				service := fixtureService(fixtures)
+				service.Runner = delayedRunner{base: fixtures, delay: tc.delay}
+				ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(45 * time.Millisecond)}
+				report, err := service.Discover(ctx, Options{Only: []string{"aws"}, Timeout: time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				aws := report.Probes["aws"]
+				if aws.Status != tc.status || aws.Findings.AWS == nil || aws.Findings.AWS.Account != "123456789012" || aws.Findings.AWS.Region != tc.region {
+					t.Fatalf("status=%s findings=%+v", aws.Status, aws.Findings.AWS)
+				}
+			})
+		})
+	}
+}
+
+func TestExpiredDeadlineSkipsCommandAndCachedData(t *testing.T) {
+	ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Second)}
+	fixtures := &fixtureRunner{fixtures: cloudFixtures()}
+	p := probe{service: fixtureService(fixtures), ctx: ctx, result: ProbeResult{Status: OK}}
+	result := p.run("aws", "configure", "get", "region")
+	if !errors.Is(result.Err, context.DeadlineExceeded) || result.Stdout != "" || len(fixtures.calls) != 0 {
+		t.Errorf("expired command executed or returned data: result=%+v calls=%v", result, fixtures.calls)
+	}
+	if p.check("cached context", jsonResult("original")) || p.result.Status != Timeout {
+		t.Errorf("expired cached result accepted: %+v", p.result)
+	}
+	if got := p.safe("safe value"); got != "" {
+		t.Errorf("expired scalar accepted: %q", got)
+	}
+}
+
+type cancelingRunner struct {
+	base   Runner
+	cancel context.CancelFunc
+}
+
+func (r cancelingRunner) Run(ctx context.Context, name string, args ...string) executil.Result {
+	result := r.base.Run(ctx, name, args...)
+	r.cancel()
+	return result
+}
+
+func TestExplicitCancellationRejectsResultAndPreservesCause(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		t.Run(fmt.Sprint(before), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			fixtures := &fixtureRunner{fixtures: cloudFixtures()}
+			service := fixtureService(fixtures)
+			service.Runner = cancelingRunner{base: fixtures, cancel: cancel}
+			if before {
+				cancel()
+			}
+			p := probe{service: service, ctx: ctx, result: ProbeResult{Status: OK}}
+			result := p.run("aws", "configure", "get", "region")
+			if !errors.Is(result.Err, context.Canceled) || result.Stdout != "" {
+				t.Fatalf("cancellation lost or data accepted: %+v", result)
+			}
+			if before && len(fixtures.calls) != 0 {
+				t.Fatalf("command started after cancellation: %v", fixtures.calls)
+			}
+		})
+	}
+}
+
+type slowJSONValue struct{}
+
+func (*slowJSONValue) UnmarshalJSON([]byte) error {
+	time.Sleep(60 * time.Millisecond)
+	return nil
+}
+
+func TestPendingDeadlineRejectsLateJSONConversion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(45 * time.Millisecond)}
+		fixtures := &fixtureRunner{fixtures: cloudFixtures()}
+		p := probe{service: fixtureService(fixtures), ctx: ctx, result: ProbeResult{Status: OK}}
+		var value slowJSONValue
+		if p.read("identity", &value, "aws", "sts", "get-caller-identity", "--output", "json", "--no-cli-pager", "--no-cli-auto-prompt") || p.result.Status != Timeout {
+			t.Fatalf("late conversion accepted: %+v", p.result)
+		}
+	})
+}
+
+func TestPendingDeadlineFinalStatusWithoutCommand(t *testing.T) {
+	cleanEnv(t)
+	synctest.Test(t, func(t *testing.T) {
+		ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(45 * time.Millisecond)}
+		fixtures := &fixtureRunner{fixtures: cloudFixtures()}
+		service := fixtureService(fixtures)
+		service.LookPath = func(string) (string, error) {
+			time.Sleep(60 * time.Millisecond)
+			return "", errors.New("missing")
+		}
+		report, err := service.Discover(ctx, Options{Only: []string{"aws"}, Timeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Probes["aws"].Status != Timeout || len(fixtures.calls) != 0 {
+			t.Fatalf("deadline not reflected in final status: %+v calls=%v", report, fixtures.calls)
+		}
+	})
 }

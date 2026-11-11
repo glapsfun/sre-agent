@@ -152,7 +152,7 @@ func (s Service) Discover(ctx context.Context, opts Options) (Report, error) {
 				obs.Endpoints = limit(&p, "observability endpoints", obs.Endpoints, 20)
 				obs.Ingresses = limit(&p, "observability ingresses", obs.Ingresses, 20)
 			}
-			if probeCtx.Err() != nil {
+			if p.err() != nil {
 				p.fail(Timeout, "probe deadline or cancellation reached")
 			}
 			boundary := strings.Split(wrapper.Wrap(name, ""), "\n")
@@ -188,6 +188,17 @@ type probe struct {
 	result  ProbeResult
 }
 
+func (p *probe) err() error {
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+	// Timer cancellation may not run before a ready command result is accepted.
+	if deadline, ok := p.ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func (p *probe) fail(status Status, gap string) {
 	priority := map[Status]int{OK: 0, Missing: 1, Denied: 2, Error: 3, Timeout: 4}
 	if priority[status] > priority[p.result.Status] {
@@ -216,6 +227,9 @@ func (p *probe) online() bool {
 
 func (p *probe) check(label string, result executil.Result) bool {
 	if result.Err == nil {
+		result.Err = p.err()
+	}
+	if result.Err == nil {
 		return true
 	}
 	status := Error
@@ -243,12 +257,12 @@ func (p *probe) check(label string, result executil.Result) bool {
 }
 
 func (p *probe) run(name string, args ...string) executil.Result {
-	if p.ctx.Err() != nil {
-		return executil.Result{Err: p.ctx.Err()}
+	if err := p.err(); err != nil {
+		return executil.Result{Err: err}
 	}
 	result := p.service.Runner.Run(p.ctx, name, args...)
-	if p.ctx.Err() != nil {
-		return executil.Result{Err: p.ctx.Err()}
+	if err := p.err(); err != nil {
+		return executil.Result{Err: err}
 	}
 	if len(result.Stdout) > safety.MaxResponseBytes || len(result.Stderr) > safety.MaxResponseBytes {
 		return executil.Result{Err: safety.ErrResponseTooLarge}
@@ -263,10 +277,16 @@ func (p *probe) read(label string, dest any, name string, args ...string) bool {
 	}
 	// Apply the same protection to injected runners as to the real executor.
 	data, err := safety.NewRedactor().RedactContext(p.ctx, r.Stdout)
+	if err == nil {
+		err = p.err()
+	}
 	if err != nil {
 		return p.check(label, executil.Result{Err: err})
 	}
 	err = safety.DecodeJSON(p.ctx, data, dest)
+	if deadlineErr := p.err(); deadlineErr != nil {
+		return p.check(label, executil.Result{Err: deadlineErr})
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, safety.ErrResponseTooLarge) || errors.Is(err, safety.ErrResponseComplexity) {
 		return p.check(label, executil.Result{Err: err})
 	}
