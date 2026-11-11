@@ -16,6 +16,9 @@ const DefaultTimeout = 30 * time.Second
 type Result struct {
 	Stdout, Stderr string
 	Err            error
+	// ExitCode is present only for a normal, nonzero process exit. Launch,
+	// cancellation, signal, and postprocessing failures leave it unset.
+	ExitCode *int
 }
 
 type Runner struct {
@@ -62,6 +65,11 @@ func (r Runner) Run(ctx context.Context, name string, args ...string) Result {
 	}
 	result := Result{Stdout: cleanOut, Stderr: cleanErr}
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() >= 0 {
+			code := exit.ExitCode()
+			result.ExitCode = &code
+		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			result.Err = err
 		} else {

@@ -174,3 +174,30 @@ func TestStructuredOutputDeadline(t *testing.T) {
 		t.Fatal("rejected structured output produced evidence")
 	}
 }
+
+func TestProcessFailureExitMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, command string
+		args          []string
+		wantCode      bool
+	}{
+		{"normal exit", "sh", []string{"-c", "exit 1"}, true},
+		{"launch failure", "/missing/discovery-executable", nil, false},
+		{"signal", "sh", []string{"-c", "kill -TERM $$"}, false},
+		{"timeout", "sh", []string{"-c", "sleep 1"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := (Runner{Timeout: 30 * time.Millisecond}).Run(context.Background(), tc.command, tc.args...)
+			if result.Err == nil {
+				t.Fatal("missing command failure")
+			}
+			if tc.wantCode {
+				if result.ExitCode == nil || *result.ExitCode != 1 {
+					t.Fatalf("lost process exit: %+v", result)
+				}
+			} else if result.ExitCode != nil {
+				t.Fatalf("non-exit failure has exit status: %+v", result)
+			}
+		})
+	}
+}

@@ -329,7 +329,9 @@ func (p *probe) aws() {
 	}
 	if a.Region == "" {
 		r := p.run("aws", "configure", "get", "region")
-		if p.check("AWS region", r) {
+		if r.Err != nil && r.ExitCode != nil && *r.ExitCode == 1 && r.Stdout == "" && r.Stderr == "" {
+			p.fail(Missing, "AWS region is not configured")
+		} else if p.check("AWS region", r) {
 			a.Region = strings.TrimSpace(r.Stdout)
 		}
 	}
@@ -391,7 +393,13 @@ func (p *probe) github() {
 	if !p.require("gh") || !p.online() {
 		return
 	}
-	if p.read("GitHub repository", g, "gh", "repo", "view", "--json", "nameWithOwner,url") && (g.NameWithOwner == "" || g.URL == "") {
-		p.fail(Error, "GitHub repository: missing name or URL")
+	var repository GitHub
+	if !p.read("GitHub repository", &repository, "gh", "repo", "view", "--json", "nameWithOwner,url") {
+		return
 	}
+	if repository.NameWithOwner == "" || repository.URL == "" {
+		p.fail(Error, "GitHub repository: missing name or URL")
+		return
+	}
+	*g = repository
 }

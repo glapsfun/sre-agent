@@ -429,3 +429,62 @@ func TestStructuredResponseDeadlineKeepsEarlierFindings(t *testing.T) {
 		t.Fatal("rejected response implied absence or lost earlier evidence")
 	}
 }
+
+func TestAWSUnsetRegionUsesActualExitStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, command string
+		want          Status
+	}{
+		{"unset", "exit 1", Missing},
+		{"configuration failure", "echo invalid-config >&2; exit 1", Error},
+		{"other exit", "exit 2", Error},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanEnv(t)
+			fixtures := cloudFixtures()
+			fixtures["aws configure get region"] = (executil.Runner{}).Run(context.Background(), "sh", "-c", tc.command)
+			report, err := fixtureService(&fixtureRunner{fixtures: fixtures}).Discover(context.Background(), Options{Only: []string{"aws"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := report.Probes["aws"]
+			if p.Status != tc.want || p.Findings.AWS.Account != "123456789012" || p.Findings.AWS.Region != "" {
+				t.Fatalf("region outcome: %+v", p)
+			}
+		})
+	}
+}
+
+func TestGitHubRejectedResponsePublishesNoFields(t *testing.T) {
+	for _, input := range []string{
+		`{"nameWithOwner":"owner/repo","url":42}`,
+		`{"nameWithOwner":"owner/repo"}`,
+		`{"url":"https://github.com/owner/repo"}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			cleanEnv(t)
+			f := &fixtureRunner{fixtures: map[string]executil.Result{"gh repo view --json nameWithOwner,url": jsonResult(input)}}
+			report, err := fixtureService(f).Discover(context.Background(), Options{Only: []string{"github"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := report.Probes["github"]
+			if p.Status != Error || p.Findings.GitHub.NameWithOwner != "" || p.Findings.GitHub.URL != "" {
+				t.Fatalf("rejected fields published: %+v", p.Findings.GitHub)
+			}
+		})
+	}
+}
+
+func TestAWSExitMessageWithoutTypedStatusIsStillError(t *testing.T) {
+	cleanEnv(t)
+	fixtures := cloudFixtures()
+	fixtures["aws configure get region"] = executil.Result{Err: errors.New("external command failed: exit status 1")}
+	report, err := fixtureService(&fixtureRunner{fixtures: fixtures}).Discover(context.Background(), Options{Only: []string{"aws"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Probes["aws"].Status != Error {
+		t.Fatal("inferred missing region from error text")
+	}
+}
