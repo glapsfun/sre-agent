@@ -42,13 +42,29 @@ func Open(ctx context.Context, root string) (*Store, error) {
 		return nil, errors.New("repository root is not a directory")
 	}
 	directory := filepath.Join(root, ".sre-agent")
-	if err := os.MkdirAll(directory, 0700); err != nil {
+	if err := os.Mkdir(directory, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, storeError("create store directory", err)
+	}
+	// Only the repository root may resolve through symlinks; store-owned
+	// entries must not redirect permission changes or database writes.
+	info, err = os.Lstat(directory)
+	if err != nil {
+		return nil, storeError("inspect store directory", err)
+	}
+	if !info.IsDir() {
+		return nil, errors.New("store directory must be a directory, not a symlink")
+	}
+	path := filepath.Join(directory, "sre.db")
+	info, err = os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, storeError("inspect store file", err)
+	}
+	if err == nil && !info.Mode().IsRegular() {
+		return nil, errors.New("store database must be a regular file, not a symlink or special file")
 	}
 	if err := os.Chmod(directory, 0700); err != nil {
 		return nil, storeError("protect store directory", err)
 	}
-	path := filepath.Join(directory, "sre.db")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, storeError("create store file", err)

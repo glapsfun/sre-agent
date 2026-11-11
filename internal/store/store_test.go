@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -106,6 +107,125 @@ func TestOpenPreservesReservedPathCharacters(t *testing.T) {
 	s := openStore(t, root)
 	execSQL(t, s.DB(), "CREATE TABLE sample (value INTEGER)")
 	if _, err := os.Stat(filepath.Join(root, ".sre-agent", "sre.db")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenRejectsStoreDirectorySymlinkWithoutChangingTarget(t *testing.T) {
+	root, target := t.TempDir(), t.TempDir()
+	if err := os.Chmod(target, 0750); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "unrelated")
+	if err := os.WriteFile(marker, []byte("keep this content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, ".sre-agent")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(t.Context(), root)
+	if s != nil {
+		_ = s.Close()
+	}
+	if err == nil {
+		t.Error("store directory symlink accepted")
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != 0750 {
+		t.Errorf("target directory permissions changed: %v, %v", info, err)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "unrelated" {
+		t.Errorf("target directory contents changed: %v, %v", entries, err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "keep this content" {
+		t.Errorf("target contents changed: %q, %v", data, err)
+	}
+}
+
+func TestOpenRejectsNonregularDatabaseBeforeChangingPaths(t *testing.T) {
+	for _, kind := range []string{"symlink", "dangling_symlink", "fifo", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			directory := filepath.Join(root, ".sre-agent")
+			if err := os.Mkdir(directory, 0750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(directory, 0750); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(directory, "sre.db")
+			target := filepath.Join(t.TempDir(), "unrelated")
+			switch kind {
+			case "symlink", "dangling_symlink":
+				if kind == "symlink" {
+					if err := os.WriteFile(target, []byte("keep this content"), 0640); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chmod(target, 0640); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			case "fifo":
+				if err := syscall.Mkfifo(path, 0640); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				if err := os.Mkdir(path, 0750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, openErr := Open(t.Context(), root)
+			if s != nil {
+				_ = s.Close()
+			}
+			if openErr == nil {
+				t.Error("nonregular database entry accepted")
+			}
+			after, err := os.Lstat(path)
+			if err != nil || before.Mode() != after.Mode() {
+				t.Errorf("database entry mode changed: before %v, after %v, error %v", before, after, err)
+			}
+			info, err := os.Stat(directory)
+			if err != nil || info.Mode().Perm() != 0750 {
+				t.Errorf("store directory permissions changed: %v, %v", info, err)
+			}
+			if kind == "symlink" {
+				info, err := os.Stat(target)
+				if err != nil || info.Mode().Perm() != 0640 {
+					t.Errorf("symlink target permissions changed: %v, %v", info, err)
+				}
+				data, err := os.ReadFile(target)
+				if err != nil || string(data) != "keep this content" {
+					t.Errorf("symlink target contents changed: %q, %v", data, err)
+				}
+			}
+			if kind == "dangling_symlink" {
+				if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("dangling symlink target created: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAllowsSymlinkInExplicitRepositoryRoot(t *testing.T) {
+	target := t.TempDir()
+	root := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(target, root); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, root)
+	execSQL(t, s.DB(), "CREATE TABLE sample (value INTEGER)")
+	if _, err := os.Stat(filepath.Join(target, ".sre-agent", "sre.db")); err != nil {
 		t.Fatal(err)
 	}
 }
