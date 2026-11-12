@@ -84,3 +84,59 @@ jobs:
             await github.rest.repos.updateRelease({
               ...context.repo, release_id: release.id, draft: false
             });
+
+  verify-published:
+    name: Published release (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: publish
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+    steps:
+      - name: Download and verify published binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          directory="$(mktemp -d "$RUNNER_TEMP/sre-release.XXXXXXXX")"
+          cd "$directory"
+          asset="sre_${RELEASE_VERSION}_${GOOS}_${GOARCH}"
+          base_url="https://github.com/$RELEASE_REPOSITORY/releases/download/$RELEASE_VERSION"
+          for name in "$asset" SHA256SUMS; do
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+              --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 120 \
+              --output "$name" "$base_url/$name"
+          done
+          expected="$(awk -v name="$asset" '$2 == name {if (NF != 2) exit 1; print $1}' SHA256SUMS)"
+          [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'Invalid or duplicate release checksum' >&2; exit 1; }
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual="$(sha256sum "$asset")"
+          else
+            actual="$(shasum -a 256 "$asset")"
+          fi
+          [[ "${actual%% *}" == "$expected" ]] || { echo 'Release checksum mismatch' >&2; exit 1; }
+          uname -s -m
+          file "$asset"
+          chmod 700 "$asset"
+          "./$asset" version | python3 -c 'import json,os,sys; r=json.load(sys.stdin); assert r["ok"] and r["data"]["version"] == os.environ["RELEASE_VERSION"]'
+          text_version="$("./$asset" version --format text)"
+          test "$text_version" = "sre $RELEASE_VERSION"
