@@ -412,3 +412,73 @@ func TestSimpleCredentialArgumentsRetainUsefulCommandContext(t *testing.T) {
 		}
 	}
 }
+
+func TestLabeledAssignmentsAndCurlClustersStayOutOfStorage(t *testing.T) {
+	cases := []struct{ name, command, want string }{
+		{"review curl cluster", `curl -suuser:review-planted-cluster https://example.test`, `curl -su[REDACTED] https://example.test`},
+		{"review assignment quote", `API_TOKEN='prefix 'review-planted-assignment curl https://example.test`, `[REDACTED]`},
+		{"review assignment escape", `API_TOKEN=prefix\ review-planted-escape curl https://example.test`, `[REDACTED]`},
+		{"longer cluster", `curl -fsSuuser:review-planted-long https://example.test`, `curl -fsSu[REDACTED] https://example.test`},
+		{"separate cluster value", `curl -sSu user:review-planted-separate 'https://example.test/path with spaces'`, `curl -sSu [REDACTED] 'https://example.test/path with spaces'`},
+		{"quoted cluster value", `curl -su'user:prefix 'review-planted-cluster-tail https://example.test`, `[REDACTED]`},
+		{"escaped cluster value", `curl -suuser:prefix\ review-planted-cluster-escape https://example.test`, `[REDACTED]`},
+		{"double assignment", `API_TOKEN="prefix "review-planted-double curl https://example.test`, `[REDACTED]`},
+		{"append assignment", `API_TOKEN+=review-planted-append curl https://example.test`, `API_TOKEN+=[REDACTED] curl https://example.test`},
+		{"credential assignment", `CREDENTIAL=review-planted-credential curl https://example.test`, `CREDENTIAL=[REDACTED] curl https://example.test`},
+		{"authorization assignment", `AUTHORIZATION=review-planted-authorization curl https://example.test`, `AUTHORIZATION=[REDACTED] curl https://example.test`},
+		{"comma assignment", `API_TOKEN=prefix,review-planted-comma curl https://example.test`, `API_TOKEN=[REDACTED] curl https://example.test`},
+		{"multiple assignments", `LANG=C API_TOKEN=review-planted-one PASSWORD=review-planted-two curl 'https://example.test/path with spaces'`, `LANG=C API_TOKEN=[REDACTED] PASSWORD=[REDACTED] curl 'https://example.test/path with spaces'`},
+		{"ordinary assignment", `LANG=C curl 'https://example.test/path with spaces'`, `LANG=C curl 'https://example.test/path with spaces'`},
+		{"proxy attached", `curl -Uproxy:review-planted-proxy https://example.test`, `curl -U[REDACTED] https://example.test`},
+		{"proxy clustered", `curl -sSUproxy:review-planted-proxy-cluster https://example.test`, `curl -sSU[REDACTED] https://example.test`},
+		{"proxy separate", `curl -sU proxy:review-planted-proxy-separate 'https://example.test/path with spaces'`, `curl -sU [REDACTED] 'https://example.test/path with spaces'`},
+		{"proxy ambiguous", `curl -sU'proxy:prefix 'review-planted-proxy-tail https://example.test`, `[REDACTED]`},
+		{"proxy long equals", `curl --proxy-user=proxy:review-planted-proxy-long https://example.test`, `curl --proxy-user=[REDACTED] https://example.test`},
+		{"proxy long separate", `curl --proxy-user proxy:review-planted-proxy-value https://example.test`, `curl --proxy-user [REDACTED] https://example.test`},
+		{"header uppercase is argument", `curl -sHUser-Agent:test https://example.test`, `curl -sHUser-Agent:test https://example.test`},
+		{"earlier value-taking option", `curl -sAuser-agent https://example.test`, `curl -sAuser-agent https://example.test`},
+		{"header option consumes cluster", `curl -sHuser-agent:test https://example.test`, `curl -sHuser-agent:test https://example.test`},
+		{"write-out option consumes cluster", `curl -swuser=%{http_code} https://example.test`, `curl -swuser=%{http_code} https://example.test`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, root := testStore(t)
+			e := event("labeled-call", "pre")
+			e.Command = tc.command
+			for range 2 {
+				if err := Record(t.Context(), s, e); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.Event = "success"
+			e.GuardDecision = nil
+			if err := Record(t.Context(), s, e); err != nil {
+				t.Fatal(err)
+			}
+			r := calls(t, s, Filter{})
+			if len(r.Calls) != 1 || r.Calls[0].Command != tc.want || r.Calls[0].ToolUseID != "labeled-call" || r.Calls[0].GuardDecision == nil || *r.Calls[0].GuardDecision != "allowed" || r.Calls[0].Outcome != "succeeded" {
+				t.Errorf("metadata: %+v", r)
+			}
+			encoded, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "review-planted-") {
+				t.Errorf("labeled credential in query: %s", encoded)
+			}
+			files, err := filepath.Glob(filepath.Join(root, ".sre-agent", "sre.db*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				raw, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(raw), "review-planted-") {
+					t.Errorf("labeled credential in %s", filepath.Base(file))
+				}
+			}
+		})
+	}
+}

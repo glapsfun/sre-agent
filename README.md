@@ -287,17 +287,20 @@ The timestamp records the first observation, not a tool start time. Absent durat
 status remain null. The hook adapter does not infer process exit status from tool output or failure text.
 
 Metadata contains sanitized command/path text, never complete inputs, responses, or failure messages.
-Credential patterns and flags are redacted before writing. Ambiguous credential arguments cause the
+Credential patterns, sensitive shell assignments, and user credential flags, including curl clusters,
+are redacted before writing. Ambiguous credential arguments cause the
 entire command text to be stored as `[REDACTED]`; simple values retain sanitized command context.
-Identity fields that require redaction are
-rejected to avoid identity collisions. Do not place arbitrary secret values in commands or identifiers.
+Identity fields that require redaction are rejected to avoid identity collisions. Do not place arbitrary
+secret values in commands or identifiers.
 The first observation pins the validated run and call metadata. Contradictory events or metadata produce
 an absorbing `conflict` outcome and clear numeric metrics; a run-binding conflict leaves the original row
 unchanged and emits a diagnostic. Repeated delivery cannot create another row for the same call.
 
-The matchers cover Bash, Read, Grep and `mcp__plugin_sre-agent_sre__.*`. Only the seven planned MCP
-read operations are allowed: `discover`, `logs_fold`, `prom_query`, `timeline`, `recall`, `run_resume`, and
-`report`. `ledger_add` and unknown operations in this namespace are blocked for investigators.
+The matchers cover every declared investigator tool: Bash, Read, Grep, Glob and WebFetch, plus
+`mcp__plugin_sre-agent_sre__.*`. Glob records only its optional sanitized path; WebFetch records its
+sanitized URL in the existing `path` field. Glob patterns, WebFetch prompts and responses are omitted.
+Only the seven planned MCP read operations are allowed: `discover`, `logs_fold`, `prom_query`,
+`timeline`, `recall`, `run_resume`, and `report`. `ledger_add` and unknown operations in this namespace are blocked for investigators.
 
 Calls with no delivered hook cannot be logged. Permission denial can omit a post event, and schema
 rejection can omit both events. Legacy pre events with all of `session_id`, `tool_use_id`, and `cwd`

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -42,40 +43,84 @@ type Call struct {
 
 // Shell flags with a separate argument need protection in addition to the shared
 // redactor's assignments, JSON keys, authorization headers and URL credentials.
-var secretFlag = regexp.MustCompile(`(?i)((?:--[a-z0-9_-]*(?:password|passwd|token|secret|api[_-]?key|access[_-]?key|credential|authorization)[a-z0-9_-]*|--user|-u)(?:\s+|=))("(?:\\.|[^"\\])*"|'[^'\n]*'|[^\s;|&]+)`)
+var secretFlag = regexp.MustCompile(`(?i)((?:--[a-z0-9_-]*(?:password|passwd|token|secret|api[_-]?key|access[_-]?key|credential|authorization)[a-z0-9_-]*|--(?:proxy-)?user|-u)(?:\s+|=))("(?:\\.|[^"\\])*"|'[^'\n]*'|[^\s;|&]+)`)
 
-var attachedUser = regexp.MustCompile(`(^|\s)(-u)[^\s;|&]+`)
+var shellAssignment = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)(\+?=)`)
+var sensitiveName = regexp.MustCompile(`(?i)password|passwd|token|secret|api[_-]?key|access[_-]?key|authorization|credential`)
+var shortOptions = regexp.MustCompile(`(^|[\s;|&])(-[A-Za-z0-9]+)`)
 
 func sanitize(ctx context.Context, value string) (string, error) {
-	// Only syntax inside a credential argument makes its span ambiguous; quoted
-	// URLs or other unrelated arguments must retain useful command context.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if len(value) > safety.MaxResponseBytes {
+		return "", safety.ErrResponseTooLarge
+	}
+	var starts []int
 	for _, match := range secretFlag.FindAllStringSubmatchIndex(value, -1) {
-		if ambiguousCredential(value[match[4]:]) {
-			return "[REDACTED]", ctx.Err()
+		starts = append(starts, match[4])
+	}
+	for _, match := range shellAssignment.FindAllStringSubmatchIndex(value, -1) {
+		if sensitiveName.MatchString(value[match[2]:match[3]]) {
+			starts = append(starts, match[1])
 		}
 	}
-	for _, match := range attachedUser.FindAllStringSubmatchIndex(value, -1) {
-		if ambiguousCredential(value[match[5]:]) {
-			return "[REDACTED]", ctx.Err()
+	for _, match := range shortOptions.FindAllStringSubmatchIndex(value, -1) {
+		// Curl consumes the rest of a cluster at its first value-taking option.
+		// A username-looking user agent after -A is not a later -u option.
+		for position := match[4] + 1; position < match[5]; position++ {
+			flag := value[position]
+			if flag == 'u' || flag == 'U' {
+				start := position + 1
+				for start < len(value) && strings.ContainsRune(" \t\n\r\f\v", rune(value[start])) {
+					start++
+				}
+				starts = append(starts, start)
+				break
+			}
+			if strings.ContainsRune("ACDEFHKOTXYbcdemorwxyz", rune(flag)) {
+				break
+			}
 		}
 	}
-	value = attachedUser.ReplaceAllString(value, "${1}${2}[REDACTED]")
-	value = secretFlag.ReplaceAllString(value, "${1}[REDACTED]")
-	return safety.NewRedactor().RedactContext(ctx, value)
+	type span struct{ start, end int }
+	var spans []span
+	for _, start := range starts {
+		end, ambiguous := credentialEnd(value, start)
+		if ambiguous {
+			return "[REDACTED]", ctx.Err()
+		}
+		if end > start {
+			spans = append(spans, span{start, end})
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	var out strings.Builder
+	consumed := 0
+	for _, span := range spans {
+		if span.start < consumed {
+			continue
+		}
+		out.WriteString(value[consumed:span.start])
+		out.WriteString("[REDACTED]")
+		consumed = span.end
+	}
+	out.WriteString(value[consumed:])
+	return safety.NewRedactor().RedactContext(ctx, out.String())
 }
 
-// A simple shell word ends at an unquoted separator. Anything requiring shell
-// interpretation is omitted rather than partially redacted with a regex.
-func ambiguousCredential(argument string) bool {
-	for _, char := range argument {
+// Only syntax inside the credential word makes its span ambiguous. Preserve
+// unrelated quoted arguments; omit complex credential text rather than a fragment.
+func credentialEnd(value string, start int) (int, bool) {
+	for index, char := range value[start:] {
 		switch char {
 		case ' ', '\t', '\n', '\r', '\f', '\v', ';', '|', '&':
-			return false
+			return start + index, false
 		case '\'', '"', '\\', '`', '$', '(', ')', '{', '}', '[', ']', '*', '?', '<', '>':
-			return true
+			return start + index, true
 		}
 	}
-	return false
+	return len(value), false
 }
 
 func prepare(ctx context.Context, e Entry) (Entry, error) {

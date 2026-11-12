@@ -137,8 +137,11 @@ func recordHook(fields map[string]json.RawMessage, agent, tool string, decision 
 		case "Read":
 			raw = input["file_path"]
 			dest = &e.Path
-		case "Grep":
+		case "Grep", "Glob":
 			raw = input["path"]
+			dest = &e.Path
+		case "WebFetch":
+			raw = input["url"]
 			dest = &e.Path
 		}
 		if dest != nil && len(raw) > 0 && json.Unmarshal(raw, dest) != nil {

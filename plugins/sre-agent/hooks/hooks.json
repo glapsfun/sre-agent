@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Grep|mcp__plugin_sre-agent_sre__.*",
+        "matcher": "Bash|Read|Grep|Glob|WebFetch|mcp__plugin_sre-agent_sre__.*",
         "hooks": [
           {
             "type": "command",
@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Read|Grep|mcp__plugin_sre-agent_sre__.*",
+        "matcher": "Bash|Read|Grep|Glob|WebFetch|mcp__plugin_sre-agent_sre__.*",
         "hooks": [
           {
             "type": "command",
@@ -25,7 +25,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Bash|Read|Grep|mcp__plugin_sre-agent_sre__.*",
+        "matcher": "Bash|Read|Grep|Glob|WebFetch|mcp__plugin_sre-agent_sre__.*",
         "hooks": [
           {
             "type": "command",

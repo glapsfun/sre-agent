@@ -324,6 +324,41 @@ func TestConfiguredHookCommands(t *testing.T) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		t.Fatal(err)
 	}
+
+	declared := map[string][]string{}
+	files, err := filepath.Glob(filepath.Join(source, "plugins/sre-agent/agents/*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sections := strings.SplitN(string(raw), "\n---\n", 2)
+		if len(sections) != 2 || !strings.HasPrefix(sections[0], "---\n") {
+			t.Fatalf("invalid frontmatter: %s", file)
+		}
+		var name string
+		var tools []string
+		for _, line := range strings.Split(sections[0], "\n") {
+			if strings.HasPrefix(line, "name: ") {
+				name = strings.TrimPrefix(line, "name: ")
+			}
+			if strings.HasPrefix(line, "tools: ") {
+				for _, tool := range strings.Split(strings.TrimPrefix(line, "tools: "), ",") {
+					tools = append(tools, strings.TrimSpace(tool))
+				}
+			}
+		}
+		if name == "" || len(tools) == 0 || declared[name] != nil {
+			t.Fatalf("missing/duplicate agent tool declaration: %s", file)
+		}
+		declared[name] = tools
+	}
+	if len(declared) != 7 {
+		t.Fatalf("investigator declarations: %d", len(declared))
+	}
 	for _, event := range []string{"PreToolUse", "PostToolUse", "PostToolUseFailure"} {
 		entries := config.Hooks[event]
 		if len(entries) != 1 || len(entries[0].Hooks) != 1 {
@@ -332,6 +367,14 @@ func TestConfiguredHookCommands(t *testing.T) {
 		matcher, err := regexp.Compile("^(?:" + entries[0].Matcher + ")$")
 		if err != nil {
 			t.Fatal(err)
+		}
+
+		for agent, tools := range declared {
+			for _, tool := range tools {
+				if !matcher.MatchString(tool) {
+					t.Errorf("%s misses %s declared by %s", event, tool, agent)
+				}
+			}
 		}
 		for _, tool := range []string{"Bash", "Read", "Grep", "mcp__plugin_sre-agent_sre__prom_query", "mcp__plugin_sre-agent_sre__ledger_add"} {
 			if !matcher.MatchString(tool) {
@@ -372,9 +415,9 @@ func TestConfiguredHookCommands(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(release, "SHA256SUMS"), []byte(checksum), 0600); err != nil {
 		t.Fatal(err)
 	}
-	invoke := func(event, id, tool string, blocked bool) {
+	invokePayload := func(payload map[string]any, blocked bool) {
 		t.Helper()
-		payload := fullHook(root, id, event, tool, map[string]any{"command": "kubectl get pods"})
+		event := payload["hook_event_name"].(string)
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			t.Fatal(err)
@@ -398,6 +441,11 @@ func TestConfiguredHookCommands(t *testing.T) {
 			t.Fatal("hook stdout", &out)
 		}
 	}
+
+	invoke := func(event, id, tool string, blocked bool) {
+		t.Helper()
+		invokePayload(fullHook(root, id, event, tool, map[string]any{"command": "kubectl get pods"}), blocked)
+	}
 	for _, tc := range []struct{ id, tool, terminal string }{{"shell", "Bash", "PostToolUse"}, {"mcp", "mcp__plugin_sre-agent_sre__prom_query", "PostToolUseFailure"}} {
 		invoke("PreToolUse", tc.id, tc.tool, false)
 		invoke(tc.terminal, tc.id, tc.tool, false)
@@ -407,6 +455,108 @@ func TestConfiguredHookCommands(t *testing.T) {
 	r := hookReport(t, root, "one")
 	if len(r.Calls) != 3 {
 		t.Fatalf("configured call count: %+v", r)
+	}
+
+	expected := map[string]struct{ agent, tool, path, outcome string }{}
+	for agent, tools := range declared {
+		for _, tool := range tools {
+			for _, terminal := range []string{"PostToolUse", "PostToolUseFailure"} {
+				id := agent + "-" + tool + "-" + terminal
+				input := map[string]any{}
+				path := ""
+				switch tool {
+				case "Bash":
+					input["command"] = "kubectl get pods"
+				case "Read":
+					input["file_path"] = "/repo/README.md"
+					path = "/repo/README.md"
+				case "Grep":
+					input["path"] = "/repo/src"
+					input["pattern"] = "omitted-grep-pattern"
+					path = "/repo/src"
+				case "Glob":
+					input["pattern"] = "omitted-glob-pattern"
+					if terminal == "PostToolUse" {
+						input["path"] = "/repo/source"
+						path = "/repo/source"
+					}
+				case "WebFetch":
+					input["url"] = "https://reader:omitted-url-credential@example.test/docs"
+					input["prompt"] = "omitted-fetch-prompt"
+					path = "https://[REDACTED]@example.test/docs"
+				default:
+					t.Fatalf("declared tool requires a representative metadata fixture: %s", tool)
+				}
+				payload := fullHook(root, id, "PreToolUse", tool, input)
+				payload["agent_type"] = "sre-agent:" + agent
+				invokePayload(payload, false)
+				payload["hook_event_name"] = terminal
+				if terminal == "PostToolUse" {
+					payload["tool_response"] = map[string]any{"body": "omitted-response-body"}
+				} else {
+					payload["error"] = "omitted-error-body"
+				}
+				invokePayload(payload, false)
+				invokePayload(payload, false)
+				outcome := "succeeded"
+				if terminal == "PostToolUseFailure" {
+					outcome = "failed"
+				}
+				expected[id] = struct{ agent, tool, path, outcome string }{"sre-agent:" + agent, tool, path, outcome}
+			}
+		}
+	}
+	r = hookReport(t, root, "one")
+	if len(r.Calls) != 3+len(expected) {
+		t.Fatalf("declared session count: %d want %d", len(r.Calls), 3+len(expected))
+	}
+	observed := 0
+	for _, call := range r.Calls {
+		want, ok := expected[call.ToolUseID]
+		if !ok {
+			continue
+		}
+		observed++
+		if call.Agent != want.agent || call.Tool != want.tool || call.Path != want.path || call.GuardDecision == nil || *call.GuardDecision != "allowed" || call.Outcome != want.outcome || call.ExitStatus != nil || call.DurationMS != nil {
+			t.Errorf("declared call metadata: %+v want %+v", call, want)
+		}
+	}
+	if observed != len(expected) {
+		t.Fatalf("observed declared pairs: %d want %d", observed, len(expected))
+	}
+
+	db, err := store.Open(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var storedCount int
+	err = db.DB().QueryRow("SELECT count(*) FROM commands WHERE run_id='one'").Scan(&storedCount)
+	closeErr := db.Close()
+	if err != nil || closeErr != nil || storedCount != 3+len(expected) {
+		t.Fatalf("SQL call count=%d want=%d query=%v close=%v", storedCount, 3+len(expected), err, closeErr)
+	}
+	encoded, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "omitted-") {
+		t.Fatal("unrequested input/response content in query")
+	}
+	databaseFiles, err := filepath.Glob(filepath.Join(root, ".sre-agent", "sre.db*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range databaseFiles {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "omitted-") {
+			t.Fatalf("unrequested content in %s", filepath.Base(file))
+		}
+	}
+	if !t.Failed() {
+		t.Logf("verified %d declared agent/tool pairs through both terminal kinds, duplicate terminals, and %d total rows", len(expected)/2, len(r.Calls))
 	}
 
 	// A verified checker returning 2 and an unavailable cache must not block post hooks.
