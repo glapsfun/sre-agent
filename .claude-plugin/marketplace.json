@@ -1,6 +1,6 @@
 {
   "name": "sre-agent",
-  "description": "Agentic SRE orchestrator: evidence-first incident investigation, ranked root-cause hypotheses, approval-gated remediation, and FinOps reports with every number proved. Distributed as a Claude Code plugin and as standard Agent Skills",
+  "description": "Agentic SRE orchestrator: evidence-first incident investigation, ranked root-cause hypotheses, and approval-gated remediation. Distributed as a Claude Code plugin and as standard Agent Skills",
   "owner": {
     "name": "vladtara",
     "email": "vlad@glaps.fun"
@@ -9,7 +9,7 @@
     {
       "name": "sre-agent",
       "source": "./plugins/sre-agent",
-      "description": "Agentic SRE orchestrator: evidence-first incident investigation across Kubernetes, Prometheus metrics, Loki or Elasticsearch/OpenSearch logs, Tempo/Jaeger traces, service-mesh state, and recent changes; ranked root-cause hypotheses; approval-gated remediation with rollback plans; validation, optionally under k6 load; and final incident reports. Also answers cloud cost questions on AWS, GCP, and Kubernetes with FinOps reports whose every number is proved against saved query results.",
+      "description": "Agentic SRE orchestrator: evidence-first incident investigation across Kubernetes, Prometheus metrics, Loki or Elasticsearch/OpenSearch logs, Tempo/Jaeger traces, service-mesh state, and recent changes; ranked root-cause hypotheses; approval-gated remediation with rollback plans; validation, optionally under k6 load; and final incident reports.",
       "category": "cloud-native",
       "tags": [
         "sre",
@@ -20,8 +20,7 @@
         "tracing",
         "elasticsearch",
         "istio",
-        "k6",
-        "finops"
+        "k6"
       ]
     }
   ]

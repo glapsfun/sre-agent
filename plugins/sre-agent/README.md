@@ -1,43 +1,74 @@
-# sre-agent
+# SRE Agent host setup and usage
 
-Agentic SRE orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, Gemini CLI, Copilot CLI, and any agent that supports the [Agent Skills](https://agentskills.io) standard — an assistant that helps human SRE engineers investigate and resolve operational incidents.
+The plugin supplies investigation instructions, generated investigator roles,
+local CLI/MCP tools, and Claude investigator hooks. The agent host follows the
+workflow and presents approval decisions; the Go executable collects evidence
+and maintains local records. It does not run an autonomous repair service.
+Start with the [operator walkthrough](../../README.md), or consult the
+[architecture](../../docs/architecture.md) for the implementation boundaries.
 
-## Main goal
+## Investigation workflow
 
-Behave like an experienced SRE sitting next to you during an incident. The
-agent does **not** replace the human: it drives the investigation — discovers
-the environment, collects evidence, finds the most probable root cause,
-researches fixes, and proposes remediation options — while **you stay in
-control of every change**. Nothing is mutated without your explicit approval,
-every apply is preceded by a dry-run, and every option comes with a rollback
-plan.
+The [skill](skills/sre-agent/SKILL.md) starts at Phase 0: load the project memo
+and check its freshness. Phases 1 through 6 then scope the incident, discover
+the environment, collect evidence, analyze hypotheses and expected behavior,
+propose options for approval, and apply/validate the approved option. Failed
+validation returns to evidence collection. Each option names its target,
+preview steps, risk, impact, and rollback plan.
 
-The agent follows a TDD-inspired loop:
-
-1. **Understand** the problem and its scope.
-2. **Discover** the environment: cluster, tools, GitOps manager, observability endpoints.
-3. **Collect evidence** — Kubernetes state, Prometheus metrics, Loki or Elasticsearch/OpenSearch logs, Tempo/Jaeger traces, service-mesh state, recent changes (git, CI/CD, Helm, Flux/Argo), and cloud-specific evidence on AWS EKS (IRSA/VPC CNI, node group/Fargate capacity, control-plane logs, ALB/CSI/add-ons) and GCP GKE (Workload Identity/VPC-native networking, node pool/Autopilot capacity, Cloud Logging control-plane logs, Ingress/CSI/add-ons) — via seven read-only investigator playbooks, triaged into a cheaper first wave and an escalation wave by symptom class, dispatched in parallel as subagents where the host supports them (otherwise executed inline sequentially), with each wave's dispatch mechanically verified read-only via a live state snapshot/diff.
-4. **Analyze**: build a timeline, rank root-cause hypotheses, and define *expected behavior* — the measurable criteria a fix must satisfy (the "failing test").
-5. **Propose** 2–4 remediation options (description, steps, risk, pros/cons, impact, rollback) and **wait for your approval** — a hard gate.
-6. **Apply, validate, iterate**: dry-run → apply → verify every expected-behavior criterion with live evidence — optionally under representative k6 load, behind its own approval gate. Pass → final incident report. Fail → back to step 3 with everything learned retained.
+Seven playbooks cover Kubernetes, metrics, logs, changes, traces, EKS, and GKE.
+Symptom-based triage selects an initial wave and an escalation wave from the
+applicable investigators. Hosts with supported subagents can dispatch them;
+otherwise the skill executes their playbooks inline. State snapshots around
+waves compare selected fingerprints, not all possible mutations. Unreachable
+clusters or missing tools make that check inconclusive and must be recorded.
 
 ## Installation
 
-The full 6-phase investigation works on every target. The difference is only
-*how* Phase 3 evidence collection runs: with subagents (parallel, faster) or
-inline (sequential, same evidence and format).
+The host integration follows [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+plugin packaging and the [Agent Skills](https://agentskills.io) format.
 
-| Target | Install | Phase 3 |
-| :--- | :--- | :--- |
-| **Claude Code** | `/plugin marketplace add glapsfun/sre-agent` (once), then `/plugin install sre-agent@sre-agent` | Parallel subagents + `/sre-agent` command |
-| **Codex** | `npx skills add glapsfun/sre-agent --skill sre-agent --agent codex --global -y`, then run the skill's bundled `scripts/install-codex-agents.sh` (installs to `~/.codex/agents/`; with `--project`, run it from your project directory — the target resolves against your cwd) | Parallel subagents (TOML, bundled). Skill alone = full investigation, sequential |
-| **Gemini CLI** | `npx skills add glapsfun/sre-agent --skill sre-agent --agent gemini-cli --global -y` | Full investigation, sequential |
-| **Copilot CLI** | `npx skills add glapsfun/sre-agent --skill sre-agent --agent copilot --global -y` (also picks up `.claude/skills/` installs) | Full investigation, sequential |
+For Claude Code, run these commands in the host:
 
-For Claude Code always use `/plugin install` — it additionally registers the
-`/sre-agent` command and the seven subagents. After updating the skill on
-Codex, re-run `install-codex-agents.sh` so the subagents stay in sync with
-the playbooks.
+```text
+/plugin marketplace add glapsfun/sre-agent
+/plugin install sre-agent@sre-agent
+```
+
+For noninteractive setup, the corresponding commands are
+`claude plugin marketplace add glapsfun/sre-agent` and
+`claude plugin install sre-agent@sre-agent`. A local marketplace installation
+uses the absolute checkout path containing `.claude-plugin/marketplace.json`.
+Update with `/plugin marketplace update sre-agent`.
+
+The Claude plugin provides `/sre-agent`, investigator agents, MCP registration,
+and hooks. Skills-only installation copies the skill and leaves host
+registration to you:
+
+```bash
+npx skills add glapsfun/sre-agent --skill sre-agent --agent codex --global -y
+npx skills add glapsfun/sre-agent --skill sre-agent --agent gemini-cli --global -y
+npx skills add glapsfun/sre-agent --skill sre-agent --agent copilot --global -y
+```
+
+Choose the command for your host. Omit `--global` for a project installation.
+`npx skills` does not install plugin-level hooks, slash commands, MCP
+registration, or Claude agents. It can run the investigation playbooks inline.
+
+For Codex subagents, locate the installed skill and run its bundled
+`scripts/install-codex-agents.sh`. The default target is
+`${CODEX_HOME:-~/.codex}/agents/`; with `--project`, run it from the intended
+project because the target resolves against the current directory. Re-run it
+after updating the skill to keep the generated roles synchronized. Configure
+the parent-session MCP filter below before dispatching investigators.
+
+Claude and Codex local fixtures were exercised. The Codex portable MCP fixture
+used version 0.167.1 and a locally built binary. Gemini was unavailable for
+runtime checks; Copilot CLI and VS Code packaging were not runtime-tested.
+Their configuration recipes are setup guidance, not a claim of verified host
+behavior. JSON validation alone does not prove host startup or permission
+filtering. Bash fallbacks still need their tools, network access, and a
+read-only identity.
 
 ## MCP tools
 
@@ -50,7 +81,7 @@ use a verified source build or the CLI and script fallbacks below.
 
 Prefer available typed read tools for covered operations. Supply the exact
 nonempty pinned cluster `context` to `discover`, `logs_fold`, `prom_query`, and
-`timeline`, including inline log folding and automatic endpoint discovery.
+`timeline`, including inline log folding, an explicit Prometheus URL, and automatic endpoint discovery.
 Preserve the random external-data boundaries in returned text. `run_resume`
 reads an explicit run without binding a session. `report` returns content and
 has no output-file argument. Use the guarded Bash fallback for uncovered
@@ -77,6 +108,14 @@ a separate orchestrator permission decision. Never grant it to investigators.
 A server-wide wildcard such as `mcp__plugin_sre-agent_sre__*` includes ledger
 writes and is not the recommended read-only setup. `readOnlyHint` annotations
 describe tools; they do not enforce permissions or replace the guard.
+Semantic reads such as resume, recall, and report can create or migrate the
+repository-local database when it opens. They do not append ledger entries.
+
+The final encoded MCP result is limited to 8000 bytes, including SDK-added
+fields. Oversized reads return `result_too_large` with a CLI route instead of
+silently truncating the result. A committed ledger write can return a compact
+receipt with stable run/entry IDs and a gap; retry an uncertain append only
+with the same entry ID and payload.
 
 Claude loads plugin-root [`.mcp.json`](.mcp.json), whose command is
 `${CLAUDE_PLUGIN_ROOT}/skills/sre-agent/scripts/sre` with the separate argument
@@ -174,9 +213,9 @@ on amd64 or arm64. It requires Bash, curl, and a SHA-256 tool: OpenSSL,
 sha256sum, or shasum.
 It prefers OpenSSL when available and verifies all binary bytes on every launch.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
-Use `--format text` for a readable text view. Source builds provide `version`,
+Use `--format text` for a readable text view. The CLI provides `version`,
 `discover`, `logs fold`, `prom query`, `timeline`, `run`, `ledger`,
-`incident add`, and `recall`; the
+`incident add`, `recall`, `report`, and process-log `log`; the
 existing investigation scripts remain available.
 If the installed binary lacks a command, use a source build or the existing
 scripts for that operation.
@@ -239,6 +278,9 @@ platform has its own directory. Downloads use HTTPS, bounded timeouts, and a
 release `SHA256SUMS` manifest. The launcher verifies the checksum before
 publishing a cache entry and before every execution. Checksums detect changed
 downloads and cached binaries; they trust the release manifest and local cache.
+
+See [release operations](../../docs/releases.md) for version alignment, publication,
+and recovery. The launcher does not silently execute fallback scripts.
 
 A valid cached release works offline. With no cache, a failed download exits
 nonzero and points to the existing scripts, such as `sre-env-discovery.sh` and
@@ -393,102 +435,66 @@ Phase 4 and Phase 6 workflow.
 Start an investigation explicitly with the slash command:
 
 ```text
-/sre-agent my payments service is crash-looping in prod, namespace payments
+/sre-agent Investigate checkout HTTP 503s since 09:00 UTC today using context production, namespace payments, workload deployment/checkout.
 ```
 
-Or just describe the problem — the skill auto-triggers on incident-shaped
-requests:
+Or describe the problem and let a host with automatic skill selection choose
+the skill for an incident-shaped request:
 
 ```text
 p99 latency on the checkout API went from 200ms to 3s an hour ago. Nothing was deployed.
 Our application metrics disappeared from Grafana yesterday.
 Pods in namespace search are OOMKilled every few hours.
-The checkout service is slow and we run Tempo — find which downstream call is eating the time.
-Our logs live in OpenSearch, no Loki — what errors is the orders app throwing since 09:00?
-The fix is applied and metrics look good — verify it under load before we close the incident.
+The checkout service is slow and we run Tempo; find which downstream call is eating the time.
+Our logs live in OpenSearch, no Loki; what errors is the orders app throwing since 09:00?
+The fix is applied and metrics look good; verify it under load before we close the incident.
 ```
 
 The agent then walks the loop above, keeping a visible **investigation
 ledger** (environment, evidence with the command that produced each fact,
 hypotheses with confidence, actions, validation results) updated at every
-phase. When it reaches the approval gate it presents the options and stops —
+phase. When it reaches the approval gate it presents the options and stops -
 pick one, ask for more evidence, or reject them all.
 
 After resolution you get a final incident report (summary, impact, timeline,
 root cause, actions, validation, rollback info, follow-ups) that you can save
 to your repo.
 
-## FinOps
-
-The plugin also ships a `finops` skill for cost questions on AWS, GCP, and Kubernetes. It's separate
-from incident response, and it never changes anything.
-
-```text
-/finops why did our AWS bill go up in October?
-Reconcile our October GCP invoice with the BigQuery billing export.
-Where can we save money on the search node pool, and is it safe?
-Run the monthly cost report again, and check whether last month's savings landed.
-Compare Kubecost's namespace costs with what we actually pay for the cluster.
-```
-
-It detects which billing data exists, asks once for a query budget, reconciles to the invoice, and saves
-a report under `docs/finops/`. Every number in the report is read from a saved query result, calculated
-by a script from such numbers, or marked as provided by a person, and a script proves this before the
-report is written. That guards against mistakes. It can't prove a query asked the right question, or that
-a cited cause is the true cause.
-
-- It needs `python3` 3.9 or newer. Without it, the skill stops after discovery.
-- GCP spend needs a billing export in BigQuery, and without one the report says so rather than estimating.
-- Reports hold real spend figures, so add `docs/finops/` to your `.gitignore`. The skill warns if it isn't.
-- Forecasting isn't included.
-
-It hasn't been tried on real accounts yet. Its tests use stubbed CLIs and synthetic data, with its SQL run
-in DuckDB, which proves query logic but not provider schemas. Treat the first live run as a trial.
-
-Install it alone with `npx skills add glapsfun/sre-agent --skill finops`, or get it with the plugin.
-
 ## What's inside
 
 | Component | Purpose |
 | :--- | :--- |
 | `skills/sre-agent/SKILL.md` | The orchestrator: loop, phase gates, safety rules, investigation ledger |
-| `skills/sre-agent/references/investigators/` | The seven investigator playbooks (k8s, metrics, logs, changes, traces, eks, gke) — single source of truth; executed inline when subagents are unavailable |
-| `agents/` — `sre-k8s-investigator`, `sre-metrics-analyst`, `sre-logs-investigator`, `sre-change-historian`, `sre-trace-analyst`, `sre-eks-investigator`, `sre-gke-investigator` | Read-only Claude Code subagents dispatched in parallel for evidence collection — generated from `references/investigators/` by `scripts/gen-sre-agent-artifacts.sh` |
+| `skills/sre-agent/references/investigators/` | The seven investigator playbooks (k8s, metrics, logs, changes, traces, eks, gke); single source of truth; executed inline when subagents are unavailable |
+| `agents/`; `sre-k8s-investigator`, `sre-metrics-analyst`, `sre-logs-investigator`, `sre-change-historian`, `sre-trace-analyst`, `sre-eks-investigator`, `sre-gke-investigator` | Read-only Claude Code subagents dispatched in parallel for evidence collection; generated from `references/investigators/` by `scripts/gen-sre-agent-artifacts.sh` |
 | `skills/sre-agent/agents/codex/` | The same seven subagents in Codex TOML format (generated); installed by `install-codex-agents.sh` |
 | `skills/sre-agent/references/` | Deep knowledge loaded on demand: discovery, PromQL (golden signals, kube-state, burn rates), LogQL and error taxonomy, Elasticsearch/OpenSearch query DSL, TraceQL/Jaeger tracing, deep Kubernetes evidence (nodes, NetworkPolicy, DNS, storage), service mesh (Istio/Linkerd), Grafana API discovery, root-cause analysis method, remediation templates, Terraform remediation (locating IaC-managed resources, safe plan reading, plan-classified apply/rollback), Pulumi remediation (locating IaC-managed resources, safe preview reading, preview-classified apply/rollback), Crossplane remediation (ownership detection, Ready/Synced condition and trace interpretation, status-check-verified apply/rollback), validation checklist and report format, k6 load validation, GitHub investigation via gh (repo discovery, change timeline, prior-incident and code search), sibling-skill deference (argocd/fluxcd/helm/bash-scripting/kubernetes-operator/karpenter/gh-guru/glab-guru), pinned official sources |
-| `skills/sre-agent/scripts/` | Read-only helpers: `sre-env-discovery.sh` (tools, cluster, GitOps, cloud), `sre-obs-discovery.sh` (Prometheus/Alertmanager/Grafana/Loki/Mimir/Tempo/Jaeger/Elasticsearch endpoints, service-mesh and k6 detection), `sre-evidence.sh <ns> <workload>` (one-shot evidence pack), `sre-snapshot.sh` (Phase 3 mutation verification: snapshot/diff spec-hash fingerprints around each wave's dispatch), `sre-gh-discovery.sh` (read-only GitHub discovery/search via gh: repo/timeline/incidents/code subcommands), `terraform-plan-check.sh <tf-dir>` (Phase 5/6 Terraform plan classification: no-op/create/update/delete/replace counts, flags any destroy/replace), `pulumi-preview-check.sh <stack-dir>` (Phase 5/6 Pulumi preview classification: same/create/update/delete/replace counts, flags any destroy/replace), `crossplane-status-check.sh [TYPE[.VERSION][.GROUP][/NAME]]` (Phase 2-6 Crossplane evidence and verification: classifies Provider/Managed/Composite Resource Installed/Healthy/Ready/Synced conditions), `install-codex-agents.sh` (Codex subagent install) |
+| `skills/sre-agent/scripts/` | Evidence, preview, and setup helpers: `sre-env-discovery.sh` (tools, cluster, GitOps, cloud), `sre-obs-discovery.sh` (Prometheus/Alertmanager/Grafana/Loki/Mimir/Tempo/Jaeger/Elasticsearch endpoints, service-mesh and k6 detection), `sre-evidence.sh <ns> <workload>` (one-shot evidence pack), `sre-snapshot.sh` (Phase 3 mutation verification: snapshot/diff spec-hash fingerprints around each wave's dispatch), `sre-gh-discovery.sh` (read-only GitHub discovery/search via gh: repo/timeline/incidents/code subcommands), `terraform-plan-check.sh <tf-dir>` (Phase 5/6 Terraform plan classification: no-op/create/update/delete/replace counts, flags any destroy/replace), `pulumi-preview-check.sh <stack-dir>` (Phase 5/6 Pulumi preview classification: same/create/update/delete/replace counts, flags any destroy/replace), `crossplane-status-check.sh [TYPE[.VERSION][.GROUP][/NAME]]` (Phase 2-6 Crossplane evidence and verification: classifies Provider/Managed/Composite Resource Installed/Healthy/Ready/Synced conditions), `install-codex-agents.sh` (Codex subagent install) |
 | `commands/sre-agent.md` | The `/sre-agent <problem>` entry point (Claude Code) |
-| `commands/finops.md` | The `/finops <question>` entry point (Claude Code) |
 | `hooks/` | The read-only guard for the seven investigator subagents (Claude Code) |
-| `skills/finops/SKILL.md` | The FinOps workflow: scope, discovery, budget approval, evidence, assurance, math, and report |
-| `skills/finops/references/` | AWS and GCP billing, Kubernetes cost, assurance, calculations, report fields, telemetry, troubleshooting, and which facts are confirmed |
-| `skills/finops/sql/` | Prepared billing queries for CUR 2.0, legacy CUR, and the GCP export, exercised on fixtures in DuckDB |
-| `skills/finops/scripts/` | `finops-discovery.sh` (no billable calls), `finops_aws.py`, `finops_gcp.py`, `finops_k8s.py`, and `finops_capture.py` (evidence), `finops_calc.py` (decimal math), `finops_record.py` and `finops_guard.py` (run record, read-only checks, budget), `finops_compare.py` (last report, past savings), `finops_validate.py` and `finops_report.py` (proof, then report) |
 
 ## Safety model
 
-- **Read-only until approval** — investigation never mutates; only the main
-  conversation applies changes, only after you select an option.
-- **Dry-run first** — `kubectl diff`/`--dry-run=server`, `helm --dry-run`,
+- **Read-only until approval**: the skill instructs investigators to collect
+  evidence only. The main conversation may apply changes only after you select
+  an option. These instructions depend on host permissions and credentials.
+- **Dry-run first**: `kubectl diff`/`--dry-run=server`, `helm --dry-run`,
   `flux diff`, `terraform plan`, `pulumi preview` before every apply.
-- **Secrets: metadata only** — names, ages, revisions; never values.
-- **GitOps- and IaC-aware** — fixes to Flux/Argo-managed workloads, and to
+- **Secrets: metadata only**: names, ages, revisions; never values.
+- **GitOps- and IaC-aware**: fixes to Flux/Argo-managed workloads, and to
   Terraform/Pulumi/CDK/eksctl-managed EKS infrastructure (node groups, IRSA
   roles, ALB config), are directed to the source repository/IaC, not
   hand-edited directly.
-- **Gentlest effective action** — restart over delete, scale over replace;
+- **Gentlest effective action**: restart over delete, scale over replace;
   blast radius stated before anything destructive.
-- **Load generation is mutation-class** — the optional k6 validation step has
+- **Load generation is mutation-class**: the optional k6 validation step has
   its own approval gate, states target environment/RPS/duration/blast radius
   up front, and never targets production unless you explicitly say so.
 
-FinOps runs are advisory. They never buy commitments, resize anything, enable billing
-exports, or change IAM, and their queries run only under a budget you approve.
-
 ## Read-only enforcement
 
-In a Claude Code plugin install, a hook (`hooks/readonly-guard.sh`) checks every command the seven
-investigators run and allows only known read commands. Anything it doesn't recognize is blocked and
+In a Claude Code plugin install, a hook (`hooks/readonly-guard.sh`) checks matching tool calls
+from the seven configured investigators and allows only known read operations. Anything it doesn't recognize is blocked and
 recorded as a gap. It also blocks reads of common credential files.
 
 It stops mistakes and simple prompt injection, but it's not a sandbox. It can't see inside a script it
@@ -537,34 +543,31 @@ rejection can omit both events. Legacy pre events with all of `session_id`, `too
 absent remain guard-only; partially supplied or invalid metadata emits a logging diagnostic. Live MCP
 and harness acceptance remain separate from the local hook-shaped integration tests.
 
-The hard limit is a read-only identity, so investigate under a context that can't write:
+The hard limit is a read-only identity. Have an administrator provision Kubernetes
+RBAC and AWS/GCP read permissions appropriate to the evidence you need, then
+investigate using that identity. Unreadable resources become gaps. Each
+remediation option names its target context and needs separate approval and
+credentials that permit the selected change.
 
-```bash
-kubectl create clusterrolebinding sre-agent-view --clusterrole=view --user=<read-only-user>
-```
-
-`view` leaves out Secrets and nodes, so those parts of the evidence become gaps. Use a read-only role in AWS
-and GCP too. Each remediation option names its target context, so a fix can run under one that can write.
-
-Other install paths get no hook. Codex documents that custom agent instructions don't create a read-only
+The other documented install paths do not register this Claude investigator hook. Codex documents that custom agent instructions don't create a read-only
 sandbox and that subagents inherit the session's sandbox policy, and `npx skills` installs only the skill. On
 those paths, the read-only identity is the only hard limit.
 
 ## Degraded environments
 
-Missing tooling is the normal case, not an error. Every capability has a
-fallback: no Prometheus → `kubectl top` + events; no Loki →
+Missing tooling is the normal case, not an error. The playbooks describe fallbacks for common missing capabilities: no Prometheus → `kubectl top` + events; no Loki →
 Elasticsearch/OpenSearch, else `kubectl logs`; no trace backend → latency
 RCA proceeds metrics/logs-only; mesh present but no `istioctl`/`linkerd`
 CLI → kubectl-only mesh evidence; no k6 → passive validation plus a script
 you can run yourself; no cluster access at all → static analysis of repo
 manifests with the limitation stated. Every gap is recorded in the ledger;
-the agent never claims a fix is verified without evidence.
+the skill requires live evidence before claiming a fix is verified. Permission
+denials remain gaps and must never be bypassed through a fallback.
 
 ## Works best with
 
 Install alongside the cloud-native plugins from the
-[cnative-skills marketplace](https://github.com/glapsfun/cnative-skills) — the
+[cnative-skills marketplace](https://github.com/glapsfun/cnative-skills); the
 orchestrator defers to them for deep work when they are available, and falls
 back to its own playbooks when they are not:
 [`kubernetes-operator`](https://github.com/glapsfun/cnative-skills/tree/main/plugins/kubernetes-operator), [`helm`](https://github.com/glapsfun/cnative-skills/tree/main/plugins/helm),
