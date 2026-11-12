@@ -3,6 +3,7 @@ package discover
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/glapsfun/sre-agent/internal/executil"
@@ -25,14 +26,15 @@ type Environment struct {
 }
 
 type Observability struct {
-	Context    string     `json:"context,omitempty"`
-	Endpoints  []Endpoint `json:"endpoints,omitempty"`
-	Ingresses  []Ingress  `json:"ingresses,omitempty"`
-	Istio      *bool      `json:"istio,omitempty"`
-	Linkerd    *bool      `json:"linkerd,omitempty"`
-	K6CLI      bool       `json:"k6_cli"`
-	K6Version  string     `json:"k6_version,omitempty"`
-	K6Operator *bool      `json:"k6_operator,omitempty"`
+	EndpointInventoryComplete bool       `json:"endpoint_inventory_complete"`
+	Context                   string     `json:"context,omitempty"`
+	Endpoints                 []Endpoint `json:"endpoints,omitempty"`
+	Ingresses                 []Ingress  `json:"ingresses,omitempty"`
+	Istio                     *bool      `json:"istio,omitempty"`
+	Linkerd                   *bool      `json:"linkerd,omitempty"`
+	K6CLI                     bool       `json:"k6_cli"`
+	K6Version                 string     `json:"k6_version,omitempty"`
+	K6Operator                *bool      `json:"k6_operator,omitempty"`
 }
 
 type Endpoint struct {
@@ -219,6 +221,8 @@ var components = []struct {
 	{"elasticsearch", 9200, "/_cluster/health"}, {"opensearch", 9200, "/_cluster/health"},
 }
 
+var serviceName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
+
 func (p *probe) observability() {
 	o := &Observability{K6CLI: p.have("k6")}
 	p.result.Findings.Obs = o
@@ -228,9 +232,16 @@ func (p *probe) observability() {
 	}
 	o.Context = p.safe(ctx)
 	if services, ok := p.list(ctx, "services", "--all-namespaces"); ok {
+		o.EndpointInventoryComplete = true
 		for _, svc := range services {
 			if p.err() != nil {
+				o.EndpointInventoryComplete = false
 				return
+			}
+			if !serviceName.MatchString(svc.Metadata.Name) || !serviceName.MatchString(svc.Metadata.Namespace) {
+				o.EndpointInventoryComplete = false
+				p.fail(Error, "observability service has invalid identity")
+				continue
 			}
 			name := strings.ToLower(svc.Metadata.Name)
 			for _, c := range components {
@@ -243,13 +254,17 @@ func (p *probe) observability() {
 					continue
 				}
 				ports := []int{}
+				valid := serviceName.MatchString(svc.Metadata.Name) && serviceName.MatchString(svc.Metadata.Namespace)
 				for _, port := range svc.Spec.Ports {
-					if port.Port > 0 {
+					if port.Port > 0 && port.Port <= 65535 {
 						ports = append(ports, port.Port)
+					} else {
+						valid = false
 					}
 				}
-				if len(ports) == 0 {
-					p.fail(Error, "observability service has no exposed port")
+				if len(ports) == 0 || !valid {
+					o.EndpointInventoryComplete = false
+					p.fail(Error, "observability service has invalid identity or exposed ports")
 					continue
 				}
 				o.Endpoints = append(o.Endpoints, Endpoint{Component: c.name, Namespace: svc.Metadata.Namespace, Service: svc.Metadata.Name, Ports: ports,

@@ -285,6 +285,9 @@ func TestBoundedInventoriesAndK6FirstLine(t *testing.T) {
 	if len(r.Probes["env"].Gaps) == 0 || len(r.Probes["obs"].Gaps) < 2 {
 		t.Fatal("omissions not disclosed")
 	}
+	if r.Probes["obs"].Findings.Obs.EndpointInventoryComplete {
+		t.Fatal("omitted endpoints reported as a complete inventory")
+	}
 	if r.Probes["obs"].Findings.Obs.K6Version != "k6 v1.0.0" {
 		t.Fatal("k6 version included unrelated output")
 	}
@@ -492,6 +495,33 @@ func TestAWSExitMessageWithoutTypedStatusIsStillError(t *testing.T) {
 	}
 }
 
+func TestEndpointInventoryCompleteness(t *testing.T) {
+	for _, tc := range []struct {
+		name, services string
+		complete       bool
+	}{
+		{"empty", `{"items":[]}`, true},
+		{"valid", `{"items":[{"metadata":{"name":"prometheus","namespace":"monitoring"},"spec":{"ports":[{"port":9090}]}}]}`, true},
+		{"rejected port", `{"items":[{"metadata":{"name":"prometheus","namespace":"monitoring"},"spec":{"ports":[{"port":0}]}}]}`, false},
+		{"missing namespace", `{"items":[{"metadata":{"name":"prometheus"},"spec":{"ports":[{"port":9090}]}}]}`, false},
+		{"missing name", `{"items":[{"metadata":{"namespace":"monitoring"},"spec":{"ports":[{"port":9090}]}}]}`, false},
+		{"malformed", `{}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanEnv(t)
+			fixtures := clusterFixtures()
+			fixtures["kubectl --context original get services --all-namespaces -o json"] = jsonResult(tc.services)
+			report, err := fixtureService(&fixtureRunner{fixtures: fixtures}).Discover(context.Background(), Options{Only: []string{"obs"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Probes["obs"].Findings.Obs.EndpointInventoryComplete != tc.complete {
+				t.Fatalf("inventory: %+v", report.Probes["obs"])
+			}
+		})
+	}
+}
+
 // A timer callback can still be pending after its fixed deadline has passed.
 type pendingDeadlineContext struct {
 	context.Context
@@ -615,6 +645,42 @@ func TestPendingDeadlineFinalStatusWithoutCommand(t *testing.T) {
 		}
 		if report.Probes["aws"].Status != Timeout || len(fixtures.calls) != 0 {
 			t.Fatalf("deadline not reflected in final status: %+v calls=%v", report, fixtures.calls)
+		}
+	})
+}
+
+type endpointIterationContext struct {
+	context.Context
+	onErr func()
+}
+
+func (c endpointIterationContext) Err() error {
+	c.onErr()
+	return c.Context.Err()
+}
+
+func TestPendingDeadlineMarksPartialEndpointInventoryIncomplete(t *testing.T) {
+	cleanEnv(t)
+	synctest.Test(t, func(t *testing.T) {
+		fixtures := clusterFixtures()
+		fixtures["kubectl --context original get services --all-namespaces -o json"] = jsonResult(`{"items":[{"metadata":{"name":"prometheus-first","namespace":"monitoring"},"spec":{"ports":[{"port":9090}]}},{"metadata":{"name":"prometheus-second","namespace":"monitoring"},"spec":{"ports":[{"port":9090}]}}]}`)
+		ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(45 * time.Millisecond)}
+		p := probe{service: fixtureService(&fixtureRunner{fixtures: fixtures}), opts: Options{Context: "original"}, pin: &contextPin{}, result: ProbeResult{Status: OK}}
+		advanced := false
+		p.ctx = endpointIterationContext{Context: ctx, onErr: func() {
+			// Expire between accepted endpoints without depending on check counts.
+			if obs := p.result.Findings.Obs; !advanced && obs != nil && len(obs.Endpoints) == 1 {
+				advanced = true
+				time.Sleep(60 * time.Millisecond)
+			}
+		}}
+		p.observability()
+		if ctx.Err() != nil || !errors.Is(p.err(), context.DeadlineExceeded) {
+			t.Fatalf("expected an expired deadline with cancellation pending: err=%v deadline=%v", ctx.Err(), p.err())
+		}
+		obs := p.result.Findings.Obs
+		if obs.EndpointInventoryComplete || len(obs.Endpoints) != 1 || obs.Endpoints[0].Service != "prometheus-first" {
+			t.Fatalf("partial endpoint inventory: %+v", obs)
 		}
 	})
 }
