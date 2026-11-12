@@ -19,6 +19,8 @@ the expected behavior after changing, and iterate until resolved.
    anything but known read commands for the `sre-*` investigators. It stops
    mistakes and simple injection, but it isn't a sandbox and doesn't cover this
    main conversation or Path B. A read-only identity is the hard limit.
+   Recording the local investigation ledger in the main conversation is exempt;
+   it grants no permission to investigators or to execute remediation.
 2. **Dry-run first.** Before every apply, run the ecosystem's preview
    (`kubectl diff` / `--dry-run=server`, `helm upgrade --dry-run`, `flux diff`,
    `terraform plan`, `pulumi preview`) and show the result before executing.
@@ -75,20 +77,68 @@ glapsfun/cnative-skills --skill <name>`).
 
 ## The investigation ledger
 
-Maintain one fenced markdown block, updated at every phase, posted in full
-whenever it changes:
+Start or explicitly resume a durable run before recording updates. Keep the
+returned `run_id` and pass it on every write; never select the latest run for a
+write. The source-built CLI stores each update immediately in the repository's
+`.sre-agent/sre.db`.
+
+```bash
+sre run start "<problem>" --repo <repository>
+sre run resume <run-id> --repo <repository>
+sre ledger add evidence --run <run-id> --id <stable-entry-id> --file evidence.json --repo <repository>
+```
+
+`--file -` reads one JSON object from stdin. Files and stdin have a 64 KiB
+limit; unknown fields and trailing JSON fail. Entry IDs contain 1-128 ASCII
+letters, digits, underscores or hyphens. Retain each entry ID and its payload
+until the write is acknowledged so an uncertain write can be retried with the
+same ID. `SRE_RUN_ID` is a fallback for an explicit run selection. Only reads
+may default to the latest created run. Use `--session-id <known-session-id>`
+on start, or a metadata `session_id` update, to bind a known harness session.
+Do not infer a session from an undocumented environment variable.
+
+Send every metadata, evidence, hypothesis, expected-behavior, option, approval,
+action, validation and safety-violation update through `sre ledger add`
+immediately. Metadata updates preserve omitted fields; expected-behavior
+updates replace the complete criterion set. Record concise redacted facts and
+source commands, never raw logs or secret values. Recording an approval or
+stored command does not execute it or grant permission to execute it.
+
+After every update, display the returned ledger view, preserving its external
+data boundary. After compaction or a new session, run `sre run resume <run-id>`
+and use stored history instead of reconstructing it from conversation. Responses
+are bounded to 8192 bytes, including the JSON envelope. Follow `next_offset`
+with `sre run show <run-id> --offset N` to retrieve omitted history. Shortened
+fields are named in `truncated_fields`; their stored contents remain intact.
+If collection structure cannot fit, the view explicitly marks identity-only
+entries and counts/names omitted payloads. Entry offsets cannot recover that
+oversized payload content through the bounded CLI; full records remain in the
+local database and service API. Do not treat identity-only output as a complete
+observation.
+JSON contains the marked text in `data.view.text` and safe identity/paging
+metadata. `--format text` prints the same marked view.
+
+If a write fails, report it, retain the unacknowledged payload for retry, and do
+not claim it is durable. A committed write with an unavailable view returns
+`committed=true` and a gap: resume the returned run. If output fails after a
+commit, stderr identifies the committed run and entry; retry an uncertain add
+with the same ID. Existing scripts, project memo and incident memory remain
+available. The pinned launcher release may lack these commands; if unavailable,
+report that durable recording is blocked rather than calling chat state durable.
+
+The returned view preserves this ledger shape:
 
 ```text
-INVESTIGATION LEDGER — <one-line problem statement>
+INVESTIGATION LEDGER - <one-line problem statement>
 Phase: <current phase>
 Environment: <cluster/context, namespace, workload, GitOps manager, cloud>
 Tools: <available> | Missing: <unavailable + what that blocks>
 Wave 1 investigators: <list>
-Wave 2 investigators: <list, or "not dispatched — <hypothesis> reached high confidence", or "none — Wave 1 covered the full applicable set">
+Wave 2 investigators: <list, or "not dispatched - <hypothesis> reached high confidence", or "none - Wave 1 covered the full applicable set">
 Evidence:
   - [<source command/query>] <fact>            (each entry is a fact, not an interpretation)
 Hypotheses:
-  1. <hypothesis> — confidence <high/med/low> — supported by <evidence #s>
+  1. <hypothesis> - confidence <high/med/low> - supported by <evidence #s>
 Expected behavior: <measurable criteria the fix must satisfy>
 Options proposed: <summary + which was approved, or "awaiting approval">
 Actions taken:
@@ -101,12 +151,12 @@ dispatch, insert this block into the ledger immediately and stop (see
 Phase 3):
 
 ```text
-⚠ SAFETY VIOLATION
+SAFETY VIOLATION
   Wave: <1|2>  Investigators dispatched this wave: <list>
   Changed: <object> <field> <before-hash> → <after-hash>  (or: HEAD <sha> → <sha>)
 ```
 
-A failed fix re-enters at Phase 3 with the ledger intact — record the failed
+A failed fix re-enters at Phase 3 with the ledger intact - record the failed
 hypothesis, never rediscover from scratch.
 
 ## The loop

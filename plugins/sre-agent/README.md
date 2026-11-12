@@ -46,8 +46,8 @@ launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
 on amd64 or arm64. It requires Bash, curl, and either sha256sum or shasum.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
 Use `--format text` for a readable text view. Source builds provide `version`,
-`discover`, `logs fold`, `prom query`, and `timeline`; the existing investigation
-scripts remain available.
+`discover`, `logs fold`, `prom query`, `timeline`, `run`, and `ledger`; the
+existing investigation scripts remain available.
 The pinned release may not yet include the source build's newer commands.
 
 `sre logs fold` reads stdin and returns redacted patterns, counts, first/last
@@ -134,9 +134,58 @@ run in a transaction when the database opens. A database from a newer binary
 is refused. After all users close it, a deleted database is recreated empty on
 next use.
 
-This foundation provides version metadata and migrations. The ledger, incidents,
-and process log features add their own tables and must redact secret values
-before writes. Existing incident Markdown and project memos stay in place.
+The investigation ledger stores append-only typed updates and redacts secret
+values before each committed write. Existing incident Markdown and project
+memos stay in place. Incident capture and process log commands are separate work.
+
+```bash
+sre run start "checkout errors" --id checkout-run --repo ./checkout
+sre ledger add evidence --run checkout-run --id evidence-1 --file evidence.json --repo ./checkout
+sre run resume checkout-run --repo ./checkout
+sre run show checkout-run --offset 1 --repo ./checkout --format text
+```
+
+For example, `evidence.json` contains one concise observation:
+
+```json
+{"fact":"checkout returned HTTP 503","source":"provided incident observation"}
+```
+
+The accepted kinds are `metadata`, `evidence`, `hypothesis`, `expected-behavior`,
+`option`, `approval`, `action`, `validation`, and `safety-violation`. Use `--file -`
+for stdin. Input is a single JSON object of at most 64 KiB with no unknown fields
+or trailing JSON. Every add requires a stable `--id`; retry the same payload
+with the same ID after uncertain completion. Run and entry IDs use 1-128 ASCII
+letters, digits, underscores or hyphens. Start generates a random run ID when
+`--id` is omitted. Retain the returned ID.
+
+Writes require `--run` or `SRE_RUN_ID`. An explicit resume ID takes precedence
+over that variable; without either, resume reads the latest created run. Empty
+storage reports `no runs recorded` and does not start a run. `--repo` resolves
+the Git root, including when called from a subdirectory. `--session-id` on start
+explicitly binds a known harness session; a metadata `session_id` update can
+bind another session. No harness environment variable is assumed.
+
+Resume and show include every ledger heading and page history within an
+8192-byte response budget. JSON exposes `data.view.text` inside one fresh
+external-data boundary, entry IDs, `through_seq`, `omitted_entries`,
+`next_offset`, and `truncated_fields`. Follow the returned offset using show
+or resume. Fields too large to display are shortened and named; full contents
+remain in the local database. A collection that cannot fit produces an
+identity-only diagnostic with the exact omitted-payload count and paths.
+Entry offsets cannot recover oversized content within those payloads through
+the bounded CLI; full records remain in the database and service API.
+Validation always uses complete stored history
+before presentation paging. A recorded pass checks consistency and freshness,
+not the real-world truth of an observation.
+
+A successful write returns `committed=true`. If display preparation fails after
+the commit, success retains the run/entry identity and reports a gap directing
+resume. An output failure exits nonzero, with stderr identifying the committed
+run and entry; retry an uncertain add with the same ID. Record each update
+immediately and resume after compaction or a new session. Ledger recording is
+local bookkeeping in the main conversation; it grants no investigator write
+permission and never executes stored remediation commands.
 
 ## How to use
 
