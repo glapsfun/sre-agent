@@ -49,7 +49,9 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 	format, command, opts, err := parse(args)
 	var data any
 	if err == nil {
-		if command == "timeline" {
+		if isLedgerCommand(command) {
+			return runLedger(command, opts.ledger, format, stdin, stdout, stderr)
+		} else if command == "timeline" {
 			var report timeline.Report
 			report, err = timeline.Collect(context.Background(), opts.timeline, timeline.Dependencies{})
 			if err == nil {
@@ -157,6 +159,7 @@ type commandOptions struct {
 	logs      logs.PodOptions
 	prom      prom.Options
 	timeline  timeline.Options
+	ledger    ledgerOptions
 }
 
 func parse(args []string) (string, string, commandOptions, error) {
@@ -166,6 +169,8 @@ func parse(args []string) (string, string, commandOptions, error) {
 	discoveryFlag, logFlag, podFlag, contextFlag := false, false, false, false
 	promFlag, timeoutFlag := false, false
 	timelineFlag, namespaceFlag, sinceFlag := false, false, false
+	repoFlag := false
+	ledgerFlags := map[string]bool{}
 	invalid := func(message string) (string, string, commandOptions, error) {
 		return "json", "", opts, errors.New(message)
 	}
@@ -177,7 +182,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url":
+		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset":
 		default:
 			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline --namespace NS [--format json|text]")
 		}
@@ -194,6 +199,11 @@ func parse(args []string) (string, string, commandOptions, error) {
 		switch name {
 		case "--format":
 			format = value
+		case "--id", "--session-id", "--run", "--file", "--offset":
+			ledgerFlags[name] = true
+			if err := opts.ledger.set(name, value); err != nil {
+				return invalid(err.Error())
+			}
 		case "--context":
 			if strings.TrimSpace(value) == "" {
 				return invalid("context must not be empty")
@@ -246,7 +256,11 @@ func parse(args []string) (string, string, commandOptions, error) {
 			}
 			opts.logs.Options.MaxPatterns = maximum
 		case "--workload", "--repo", "--alertmanager-url":
-			timelineFlag = true
+			if name == "--repo" {
+				repoFlag = true
+			} else {
+				timelineFlag = true
+			}
 			if strings.TrimSpace(value) == "" {
 				return invalid(name + " must not be empty")
 			}
@@ -255,6 +269,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 				opts.timeline.Workload = value
 			case "--repo":
 				opts.timeline.Repo = value
+				opts.ledger.repo = value
 			case "--alertmanager-url":
 				opts.timeline.AlertmanagerURL = value
 			}
@@ -301,6 +316,23 @@ func parse(args []string) (string, string, commandOptions, error) {
 		command = "prom query"
 		opts.prom.Query = positional[2]
 	}
+	if len(positional) >= 2 && (positional[0] == "run" || positional[0] == "ledger") {
+		command = strings.Join(positional[:2], " ")
+		if !isLedgerCommand(command) {
+			return invalid("unknown ledger command")
+		}
+		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag || timelineFlag || namespaceFlag || sinceFlag {
+			return invalid("command flags do not apply to ledger commands")
+		}
+		if err := opts.ledger.validate(command, positional[2:], ledgerFlags); err != nil {
+			return invalid(err.Error())
+		}
+		return format, command, opts, nil
+	}
+	if len(ledgerFlags) > 0 {
+		return invalid("ledger flags require run or ledger commands")
+	}
+	timelineFlag = timelineFlag || repoFlag
 	if command != "timeline" {
 		if timelineFlag {
 			return invalid("timeline flags require timeline")
