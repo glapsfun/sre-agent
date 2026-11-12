@@ -76,8 +76,8 @@ func Render(run Run, opts RenderOptions) (View, error) {
 			limit /= 2
 			continue
 		}
-		// Fixed metadata can itself exceed the budget. Keep every heading, an
-		// explicit diagnostic and entry identities so history pagination advances.
+		// Collection structure can exceed the budget even after scalar clipping.
+		// Identify omitted payloads without pretending entry paging recovers them.
 		view = renderDiagnostic(snapshot, summary, opts.Offset, count, wrapper)
 		encoded, _ = json.Marshal(view)
 		if len(encoded) <= opts.MaxBytes {
@@ -122,17 +122,7 @@ func (f *viewFields) json(path string, value any) string {
 	// Work on typed detached values so presentation cannot rewrite stored data.
 	clone := f.scalarFields(path, reflect.ValueOf(value))
 	encoded, _ = json.Marshal(clone.Interface())
-	if len(encoded) > f.limit {
-		// A large collection is shortened as one displayed field. Its original
-		// entries remain accessible in the corresponding history pages.
-		for key := range f.truncated {
-			if strings.HasPrefix(key, path+".") || strings.HasPrefix(key, path+"[") {
-				delete(f.truncated, key)
-			}
-		}
-		f.truncated[path] = true
-		return shorten(string(encoded), f.limit)
-	}
+
 	return string(encoded)
 }
 
@@ -165,6 +155,12 @@ func (f *viewFields) scalarFields(path string, value reflect.Value) reflect.Valu
 		// Map keys need shared key-aware redaction; they are not ledger identities.
 		raw, _ := json.Marshal(value.Interface())
 		_ = json.Unmarshal([]byte(safety.NewRedactor().Redact(string(raw))), result.Addr().Interface())
+		keys := result.MapKeys()
+		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+		for i, key := range keys {
+			// Indexed paths avoid exposing untrusted coordinate keys outside the wrapper.
+			result.SetMapIndex(key, f.scalarFields(fmt.Sprintf("%s[%d].value", path, i), result.MapIndex(key)))
+		}
 	default:
 		result.Set(value)
 	}
@@ -250,14 +246,14 @@ func finishView(run Run, offset int, ids []string, text string, truncated map[st
 	}
 	if len(view.TruncatedFields) > 0 {
 		text += "Truncated fields: " + strings.Join(view.TruncatedFields, ", ") + "\n"
-		text += "Displayed fields shortened; stored entries are unchanged. Use run show and --offset for history.\n"
+		text += "Displayed fields shortened or omitted; stored entries are unchanged. Entry offsets page history, not content within a field.\n"
 	}
 	view.Text = wrapper.Wrap("investigation ledger", strings.TrimSuffix(text, "\n"))
 	return view
 }
 
 func renderDiagnostic(run Run, summary ValidationSummary, offset, count int, wrapper *safety.Wrapper) View {
-	const omitted = "omitted: fixed metadata exceeds output budget"
+	const omitted = "omitted: ledger content exceeds output budget"
 	text := "INVESTIGATION LEDGER - " + omitted + "\nPhase: " + omitted + "\nEnvironment: " + omitted + "\nTools: " + omitted + " | Missing: " + omitted + "\nWave 1 investigators: " + omitted + "\nWave 2 investigators: " + omitted + "\nEvidence: " + historyCount(run.State.Evidence) + "\nHypotheses: " + historyCount(run.State.Hypotheses) + "\nExpected behavior: " + omitted + "\nOptions proposed: " + historyCount(run.State.Options) + "\nActions taken: " + historyCount(run.State.Actions) + "\nValidation: " + summary.Verdict + "\nSAFETY VIOLATION records: " + historyCount(run.State.SafetyViolations) + "\nHistory:\n"
 	ids := make([]string, 0, count)
 	fields := map[string]bool{"problem": true, "phase": true, "environment": true, "tools": true, "wave1": true, "wave2": true, "expected": true, "validation.criteria": true}
@@ -278,8 +274,10 @@ func renderDiagnostic(run Run, summary ValidationSummary, offset, count int, wra
 	}
 	for _, entry := range run.Entries[offset : offset+count] {
 		ids = append(ids, entry.ID)
-		text += fmt.Sprintf("[%s] seq=%d %s: payload omitted (output budget)\n", entry.ID, entry.Seq, entry.Kind)
+		text += fmt.Sprintf("[%s] seq=%d %s: identity only; payload omitted (output budget)\n", entry.ID, entry.Seq, entry.Kind)
 		fields["entries."+entry.ID+".payload"] = true
 	}
+	text += fmt.Sprintf("Omitted payloads on this page: %d\n", len(ids))
+	text += "Entry pagination cannot recover this oversized content through the bounded CLI; full records remain in the store/service.\n"
 	return finishView(run, offset, ids, text, fields, wrapper)
 }

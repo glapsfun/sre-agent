@@ -171,7 +171,11 @@ Resume and show include every ledger heading and page history within an
 external-data boundary, entry IDs, `through_seq`, `omitted_entries`,
 `next_offset`, and `truncated_fields`. Follow the returned offset using show
 or resume. Fields too large to display are shortened and named; full contents
-remain in the local database. Validation always uses complete stored history
+remain in the local database. A collection that cannot fit produces an
+identity-only diagnostic with the exact omitted-payload count and paths.
+Entry offsets cannot recover oversized content within those payloads through
+the bounded CLI; full records remain in the database and service API.
+Validation always uses complete stored history
 before presentation paging. A recorded pass checks consistency and freshness,
 not the real-world truth of an observation.
 

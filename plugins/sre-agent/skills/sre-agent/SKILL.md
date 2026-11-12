@@ -110,6 +110,11 @@ and use stored history instead of reconstructing it from conversation. Responses
 are bounded to 8192 bytes, including the JSON envelope. Follow `next_offset`
 with `sre run show <run-id> --offset N` to retrieve omitted history. Shortened
 fields are named in `truncated_fields`; their stored contents remain intact.
+If collection structure cannot fit, the view explicitly marks identity-only
+entries and counts/names omitted payloads. Entry offsets cannot recover that
+oversized payload content through the bounded CLI; full records remain in the
+local database and service API. Do not treat identity-only output as a complete
+observation.
 JSON contains the marked text in `data.view.text` and safe identity/paging
 metadata. `--format text` prints the same marked view.
 

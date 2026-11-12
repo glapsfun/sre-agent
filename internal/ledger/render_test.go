@@ -193,3 +193,125 @@ func TestRenderValidationUsesHistoryBeforePaging(t *testing.T) {
 		t.Fatal("paged view hid later revocation")
 	}
 }
+
+func TestRenderLongScalarPreservesShortSiblings(t *testing.T) {
+	long := strings.Repeat("x", 10000)
+	cases := []struct {
+		name     string
+		kind     Kind
+		payload  any
+		field    string
+		siblings []string
+	}{
+		{"evidence", KindEvidence, Evidence{Fact: long, Source: "distinct-short-source", Links: []string{"short-link"}}, "fact", []string{"distinct-short-source", "short-link"}},
+		{"hypothesis", KindHypothesis, Hypothesis{Statement: long, Mechanism: "short-mechanism", Confidence: "low", Supporting: []string{}, Contradicting: []string{}, DiscriminatingTest: "short-test", Status: "open"}, "statement", []string{"short-mechanism", "short-test", "open"}},
+		{"action", KindAction, Action{At: ledgerTime, Command: long, Result: "short-result", Effect: "observation", Status: "applied", Rollback: "short-rollback"}, "command", []string{"short-result", "observation", "applied", "short-rollback"}},
+		{"safety", KindSafetyViolation, SafetyViolation{Wave: 1, Investigators: []string{"logs"}, Changes: []SafetyChange{{Object: long, Field: "short-field", BeforeHash: "before-hash", AfterHash: "after-hash", Change: "changed"}}}, "changes[0].object", []string{"logs", "short-field", "before-hash", "after-hash", "changed"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			run, err := Reduce("run-1", "problem", ledgerTime, []Entry{entryWith(t, "e1", 1, c.kind, c.payload)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, compact := range []bool{true, false} {
+				view, err := Render(run, RenderOptions{MaxBytes: 6500, Compact: compact})
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, _ := json.Marshal(view)
+				if len(raw) > 6500 {
+					t.Fatalf("view exceeds budget: %d", len(raw))
+				}
+				for _, sibling := range c.siblings {
+					if !strings.Contains(view.Text, sibling) {
+						t.Fatalf("compact=%v lost short sibling %q", compact, sibling)
+					}
+				}
+				if len(view.TruncatedFields) != 1 || view.TruncatedFields[0] != "entries.e1.payload."+c.field {
+					t.Fatalf("wrong truncated fields: %v", view.TruncatedFields)
+				}
+				for _, line := range strings.Split(view.Text, "\n") {
+					if strings.HasPrefix(line, "[e1] ") {
+						start := strings.IndexByte(line, '{')
+						if start < 0 || !json.Valid([]byte(line[start:])) {
+							t.Fatalf("typed payload structure lost: %s", line)
+						}
+					}
+				}
+				if view.OmittedEntries != 0 || view.NextOffset != nil {
+					t.Fatalf("unexpected history omission: %+v", view)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderOversizedCollectionReportsPayloadOmission(t *testing.T) {
+	links := make([]string, 2000)
+	for i := range links {
+		links[i] = "short-link"
+	}
+	entries := []Entry{entryWith(t, "huge", 1, KindEvidence, Evidence{Fact: "short-fact", Source: "short-source", Links: links}), entryWith(t, "next", 2, KindEvidence, Evidence{Fact: "next-fact", Source: "next-source"})}
+	run, err := Reduce("run-1", "problem", ledgerTime, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := Render(run, RenderOptions{MaxBytes: 6500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(view)
+	if len(raw) > 6500 {
+		t.Fatalf("unbounded diagnostic: %d", len(raw))
+	}
+	if len(view.EntryIDs) != 1 || view.EntryIDs[0] != "huge" || view.OmittedEntries != 1 || view.NextOffset == nil || *view.NextOffset != 1 {
+		t.Fatalf("wrong diagnostic pagination: %+v", view)
+	}
+	for _, want := range []string{"identity only", "Omitted payloads on this page: 1", "entries.huge.payload", "cannot recover this oversized content"} {
+		if !strings.Contains(view.Text, want) {
+			t.Fatalf("diagnostic hides omission %q: %s", want, view.Text)
+		}
+	}
+	next, err := Render(run, RenderOptions{Offset: *view.NextOffset, MaxBytes: 6500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(next.Text, "next-source") || next.NextOffset != nil {
+		t.Fatalf("later entry unreachable: %+v", next)
+	}
+	if len(decoded[Evidence](t, run.Entries[0]).Links) != 2000 {
+		t.Fatal("render changed stored collection")
+	}
+}
+
+func TestRenderLongCoordinateValuePreservesShortMetadata(t *testing.T) {
+	environment := Environment{Context: "short-context", CloudCoordinates: map[string]string{"untrusted coordinate\nname": strings.Repeat("x", 10000)}, Notes: []string{"short-note"}}
+	run, err := Reduce("run-1", "problem", ledgerTime, []Entry{entryWith(t, "m1", 1, KindMetadata, MetadataUpdate{Environment: &environment})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := Render(run, RenderOptions{MaxBytes: 6500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"short-context", "short-note"} {
+		if !strings.Contains(view.Text, want) {
+			t.Fatalf("long coordinate lost short metadata %q", want)
+		}
+	}
+	if len(view.TruncatedFields) != 2 || view.TruncatedFields[0] != "entries.m1.payload.environment.cloud_coordinates[0].value" || view.TruncatedFields[1] != "environment.cloud_coordinates[0].value" {
+		t.Fatalf("wrong scalar paths: %v", view.TruncatedFields)
+	}
+	if !strings.Contains(view.Text, "untrusted coordinate") {
+		t.Fatal("coordinate key lost from marked text")
+	}
+	view.Text = ""
+	outside, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(outside), "untrusted coordinate") {
+		t.Fatalf("untrusted coordinate key escaped the wrapper: %s", outside)
+	}
+}

@@ -258,3 +258,46 @@ func TestLedgerUnwrappedResponseContainsOnlyIdentity(t *testing.T) {
 		t.Fatalf("unwrapped text: %s", encoded)
 	}
 }
+
+func TestLedgerBoundedCLIShortSiblingsAndCollectionDiagnostic(t *testing.T) {
+	root := ledgerRepo(t)
+	ledgerData(t, root, "", "run", "start", "problem", "--id", "one")
+	payload, _ := json.Marshal(ledger.Evidence{Fact: strings.Repeat("x", 10000), Source: "distinct-short-source"})
+	ledgerData(t, root, string(payload), "ledger", "add", "evidence", "--run", "one", "--id", "e1", "--file", "-")
+	for _, command := range []string{"resume", "show"} {
+		for _, format := range []string{"json", "text"} {
+			var out, stderr bytes.Buffer
+			code := RunWithInput([]string{"run", command, "one", "--repo", root, "--format", format}, nil, &out, &stderr)
+			if code != 0 || out.Len() > 8192 || !strings.Contains(out.String(), "distinct-short-source") {
+				t.Fatalf("%s %s lost required source or exceeded budget: code=%d bytes=%d stderr=%s", command, format, code, out.Len(), &stderr)
+			}
+			if !strings.Contains(out.String(), "entries.e1.payload.fact") {
+				t.Fatalf("%s %s lost scalar truncation path", command, format)
+			}
+		}
+	}
+	links := make([]string, 2000)
+	for i := range links {
+		links[i] = "short-link"
+	}
+	payload, _ = json.Marshal(ledger.Evidence{Fact: "short-fact", Source: "short-source", Links: links})
+	ledgerData(t, root, string(payload), "ledger", "add", "evidence", "--run", "one", "--id", "huge", "--file", "-")
+	ledgerData(t, root, `{"fact":"next-fact","source":"next-source"}`, "ledger", "add", "evidence", "--run", "one", "--id", "next", "--file", "-")
+	for _, command := range []string{"resume", "show"} {
+		data := ledgerData(t, root, "", "run", command, "one", "--offset", "1")
+		view := data["view"].(map[string]any)
+		if view["next_offset"] != float64(2) || view["omitted_entries"] != float64(2) {
+			t.Fatalf("wrong diagnostic paging: %+v", view)
+		}
+		text := view["text"].(string)
+		for _, want := range []string{"identity only", "Omitted payloads on this page: 1", "entries.huge.payload", "cannot recover this oversized content"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("diagnostic lacks %q", want)
+			}
+		}
+		next := ledgerData(t, root, "", "run", command, "one", "--offset", "2")["view"].(map[string]any)
+		if !strings.Contains(next["text"].(string), "next-source") {
+			t.Fatal("next entry lost")
+		}
+	}
+}
