@@ -46,10 +46,7 @@
           },
           {
             "id": 11,
-            "revisions": [
-              "revision-b",
-              "chart-2.0"
-            ],
+            "revisions": ["revision-b", "chart-2.0"],
             "deployedAt": "2026-11-11T11:20:00Z",
             "sources": [
               {
@@ -160,10 +157,7 @@
           },
           {
             "id": 11,
-            "revisions": [
-              "revision-b",
-              "chart-2.0"
-            ],
+            "revisions": ["revision-b", "chart-2.0"],
             "deployedAt": "2026-11-11T11:20:00Z",
             "sources": [
               {
@@ -230,10 +224,7 @@
           },
           {
             "id": 11,
-            "revisions": [
-              "revision-b",
-              "chart-2.0"
-            ],
+            "revisions": ["revision-b", "chart-2.0"],
             "deployedAt": "2026-11-11T11:20:00Z",
             "sources": [
               {
