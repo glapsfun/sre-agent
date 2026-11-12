@@ -43,7 +43,9 @@ the playbooks.
 
 Run `skills/sre-agent/scripts/sre version` from this plugin directory. The
 launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
-on amd64 or arm64. It requires Bash, curl, and either sha256sum or shasum.
+on amd64 or arm64. It requires Bash, curl, and a SHA-256 tool: OpenSSL,
+sha256sum, or shasum.
+It prefers OpenSSL when available and verifies all binary bytes on every launch.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
 Use `--format text` for a readable text view. Source builds provide `version`,
 `discover`, `logs fold`, `prom query`, `timeline`, `run`, and `ledger`; the
