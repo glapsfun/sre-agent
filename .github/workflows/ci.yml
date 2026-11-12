@@ -38,6 +38,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Check installed kubectl readiness
+        timeout-minutes: 1
+        run: |
+          if command -v kubectl; then
+            time kubectl version --client -o json
+          else
+            printf '%s\n' 'kubectl is unavailable; optional integration tests will skip.'
+          fi
       - name: Go formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Go vet and tests
