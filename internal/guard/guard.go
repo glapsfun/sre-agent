@@ -26,6 +26,14 @@ func Check(event Event) Decision {
 		return Decision{}
 	}
 	var reason string
+	if strings.HasPrefix(event.Tool, "mcp__plugin_sre-agent_sre__") {
+		switch strings.TrimPrefix(event.Tool, "mcp__plugin_sre-agent_sre__") {
+		case "discover", "logs_fold", "prom_query", "timeline", "recall", "run_resume", "report":
+			return Decision{}
+		default:
+			return Decision{Block: true, Reason: "the MCP operation isn't a read-only operation"}
+		}
+	}
 	switch event.Tool {
 	case "Bash":
 		var input map[string]json.RawMessage

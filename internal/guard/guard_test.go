@@ -605,3 +605,18 @@ func TestEscapedNULCannotBecomeLiteralCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPReadOperationsOnly(t *testing.T) {
+	for _, agent := range []string{"sre-k8s-investigator", "sre-agent:sre-logs-investigator"} {
+		for _, op := range []string{"discover", "logs_fold", "prom_query", "timeline", "recall", "run_resume", "report", "ledger_add", "unknown", "report_extra"} {
+			d := Check(Event{Agent: agent, Tool: "mcp__plugin_sre-agent_sre__" + op, Input: json.RawMessage(`{}`)})
+			blocked := op == "ledger_add" || op == "unknown" || op == "report_extra"
+			if d.Block != blocked {
+				t.Errorf("%s %s: %+v", agent, op, d)
+			}
+		}
+	}
+	if d := Check(Event{Tool: "mcp__plugin_sre-agent_sre__ledger_add"}); d.Block {
+		t.Fatal(d)
+	}
+}

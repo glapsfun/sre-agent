@@ -1,13 +1,35 @@
 {
-  "description": "Uses the Go checker to block commands that could change anything, and credential reads, for the sre-* investigator subagents",
+  "description": "Guards read-only investigator calls and records sanitized call metadata with pre/post reconciliation",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Grep",
+        "matcher": "Bash|Read|Grep|mcp__plugin_sre-agent_sre__.*",
         "hooks": [
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/readonly-guard.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Read|Grep|mcp__plugin_sre-agent_sre__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/skills/sre-agent/scripts/sre\" hook post || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|Read|Grep|mcp__plugin_sre-agent_sre__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/skills/sre-agent/scripts/sre\" hook post || true"
           }
         ]
       }
