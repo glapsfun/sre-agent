@@ -47,6 +47,23 @@ CREATE TABLE run_sessions (
     session_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id)
 );
+`}, {Version: 3, SQL: `
+CREATE TABLE commands (
+    session_id TEXT NOT NULL,
+    tool_use_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    recorded_at TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    command TEXT NOT NULL,
+    path TEXT NOT NULL,
+    guard_decision TEXT CHECK(guard_decision IN ('allowed','blocked')),
+    outcome TEXT NOT NULL CHECK(outcome IN ('unknown','succeeded','failed','conflict')),
+    exit_status INTEGER,
+    duration_ms INTEGER CHECK(duration_ms >= 0),
+    PRIMARY KEY(session_id, tool_use_id)
+);
+CREATE INDEX commands_run ON commands(run_id, recorded_at, session_id, tool_use_id);
 `}}
 
 // ApplyMigrations applies all pending versions atomically. SQL is trusted,

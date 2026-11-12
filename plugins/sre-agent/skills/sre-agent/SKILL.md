@@ -484,7 +484,7 @@ Metadata and pointers only — never secret values.
 | GitOps tooling | git history + manifest inspection |
 | `aws` CLI missing/unauthenticated (EKS detected) | kubectl-only EKS evidence: aws-node health, node labels, ServiceAccount role-arn annotations, Fargate pod annotations; control-plane logs/ASG/ALB/IAM detail recorded under GAPS |
 | `gcloud` CLI missing/unauthenticated (GKE detected) | kubectl-only GKE evidence: node labels, KSA Workload Identity annotations, Dataplane V2/Calico NetworkPolicy objects; control-plane logs/node-pool/backend-service/add-on detail recorded under GAPS |
-| `python3` (Claude Code plugin install) | The read-only guard blocks the investigator subagents, so run their playbooks inline (Path B) |
+| Packaged Go checker unavailable (Claude Code plugin install) | The read-only guard blocks the investigator subagents, so run their playbooks inline (Path B) |
 | A command the read-only guard blocks | Record it under `GAPS`. Don't look for another way to run it |
 | `sre-snapshot.sh` fails, or its `CLUSTER` line reads `unreachable` | Record under `Tools: Missing`; per Phase 3 step 4, treat as a degraded/inconclusive mutation check for that wave (not a violation) and note the gap in the ledger — proceed on the investigator's own read-only instructions rather than blocking the investigation |
 

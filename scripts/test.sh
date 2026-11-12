@@ -93,7 +93,11 @@ PY
 # Run repo-level test scripts under tests/ (tracked files only).
 while IFS= read -r test_script; do
   log_info "running ${test_script}"
-  bash "$test_script"
+  if [[ "$test_script" == "tests/sre-readonly-guard.test.sh" ]]; then
+    bash tests/run-sre-guard-go.sh
+  else
+    bash "$test_script"
+  fi
 done < <(git ls-files 'tests/*.test.sh')
 
 log_ok "tests passed"

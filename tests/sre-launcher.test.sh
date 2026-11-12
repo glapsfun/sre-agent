@@ -90,4 +90,96 @@ export TEST_OS=Windows
 if "$launcher" version >"$work/out" 2>"$work/err"; then fail "unsupported platform accepted"; fi
 grep -qi unsupported "$work/err" || fail "missing unsupported platform diagnostic"
 
+# Isolate availability so each checksum backend and its fallbacks are exercised.
+export TEST_OS=Linux TEST_ARCH=x86_64 OFFLINE=true
+export TEST_REAL_SHA256SUM
+TEST_REAL_SHA256SUM="$(command -v sha256sum)"
+export CHECKSUM_LOG="$work/checksums" TEST_CHECKSUM_FAILURE='' TEST_CHECKSUM_MALFORMED=''
+cat >"$work/checksum-tool" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+backend="${0##*/}"
+printf '%s\n' "$backend" >>"$CHECKSUM_LOG"
+if [[ "$TEST_CHECKSUM_MALFORMED" == "$backend" ]]; then
+  printf 'not a digest\n'
+  exit 0
+fi
+case "$backend" in
+  openssl)
+    [[ $# -eq 4 && "$1" == dgst && "$2" == -sha256 && "$3" == -r ]] || exit 98
+    shift 3
+    ;;
+  shasum)
+    [[ $# -eq 3 && "$1" == -a && "$2" == 256 ]] || exit 98
+    shift 2
+    ;;
+  sha256sum) [[ $# -eq 1 ]] || exit 98 ;;
+  *) exit 98 ;;
+esac
+if [[ "$TEST_CHECKSUM_FAILURE" == "$backend" ]]; then
+  "$TEST_REAL_SHA256SUM" "$@"
+  exit 9
+fi
+exec "$TEST_REAL_SHA256SUM" "$@"
+STUB
+chmod +x "$work/checksum-tool"
+for backend in openssl sha256sum shasum none; do
+  tool_bin="$work/tools $backend"
+  mkdir -p "$tool_bin"
+  for tool in bash awk mkdir mktemp chmod mv rm rmdir cp; do
+    ln -s "$(command -v "$tool")" "$tool_bin/$tool"
+  done
+  ln -s "$work/bin/uname" "$tool_bin/uname"
+  ln -s "$work/bin/curl" "$tool_bin/curl"
+  case "$backend" in
+    openssl) available=(openssl sha256sum shasum) ;;
+    sha256sum) available=(sha256sum shasum) ;;
+    shasum) available=(shasum) ;;
+    none) available=() ;;
+  esac
+  for tool in "${available[@]}"; do
+    ln -s "$work/checksum-tool" "$tool_bin/$tool"
+  done
+  export CLAUDE_PLUGIN_DATA="$work/backend $backend" OFFLINE=true
+  cache="$CLAUDE_PLUGIN_DATA/sre-agent/v0.17.0/linux-amd64"
+  mkdir -p "$cache"
+  cp "$work/releases/sre_v0.17.0_darwin_arm64" "$cache/sre"
+  cp "$work/releases/SHA256SUMS" "$cache/SHA256SUMS"
+  chmod +x "$cache/sre"
+  : >"$CHECKSUM_LOG"
+  before="$(wc -l <"$EXEC_LOG")"
+  if [[ "$backend" == none ]]; then
+    if PATH="$tool_bin" "$launcher" version >"$work/out" 2>"$work/err"; then fail "accepted no checksum tool"; fi
+    [[ "$(wc -l <"$EXEC_LOG")" == "$before" ]] || fail "executed without a checksum tool"
+    grep -qi 'SHA-256 tool' "$work/err" || fail "missing checksum tool diagnostic"
+    continue
+  fi
+  PATH="$tool_bin" "$launcher" version >/dev/null
+  [[ "$(cat "$CHECKSUM_LOG")" == "$backend" ]] || fail "did not prefer $backend"
+  PATH="$tool_bin" "$launcher" version >/dev/null
+  [[ "$(wc -l <"$CHECKSUM_LOG")" -eq 2 ]] || fail "$backend skipped repeated verification"
+  before="$(wc -l <"$EXEC_LOG")"
+  for mode in failure malformed; do
+    if [[ "$mode" == failure ]]; then
+      export TEST_CHECKSUM_FAILURE="$backend"
+    else
+      export TEST_CHECKSUM_MALFORMED="$backend"
+    fi
+    calls="$(wc -l <"$CHECKSUM_LOG")"
+    if PATH="$tool_bin" "$launcher" version >"$work/out" 2>"$work/err"; then fail "accepted $backend $mode"; fi
+    [[ "$(wc -l <"$EXEC_LOG")" == "$before" ]] || fail "$backend $mode executed"
+    [[ "$(wc -l <"$CHECKSUM_LOG")" -eq $((calls + 1)) ]] || fail "$backend $mode fell back after verification failed"
+    grep -qi checksum "$work/err" || fail "missing $backend $mode diagnostic"
+    export TEST_CHECKSUM_FAILURE='' TEST_CHECKSUM_MALFORMED=''
+  done
+  printf '\n# modified\n' >>"$cache/sre"
+  if PATH="$tool_bin" "$launcher" version >"$work/out" 2>"$work/err"; then fail "$backend accepted a tampered cache"; fi
+  [[ "$(wc -l <"$EXEC_LOG")" == "$before" ]] || fail "$backend executed a tampered cache"
+  export CLAUDE_PLUGIN_DATA="$work/download $backend" OFFLINE=false
+  if PATH="$tool_bin" "$launcher" version >"$work/out" 2>"$work/err"; then fail "$backend accepted a tampered download"; fi
+  [[ "$(wc -l <"$EXEC_LOG")" == "$before" ]] || fail "$backend executed a tampered download"
+  [[ ! -e "$CLAUDE_PLUGIN_DATA/sre-agent/v0.17.0/linux-amd64" ]] || fail "$backend published a tampered download"
+  grep -qi checksum "$work/err" || fail "missing $backend download diagnostic"
+done
+
 echo 'PASS: sre launcher'

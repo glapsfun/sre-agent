@@ -244,8 +244,8 @@ func TestOpenRecreatesDeletedDatabaseEmpty(t *testing.T) {
 	if got := queryInt(t, s.DB(), "SELECT count(*) FROM sqlite_master WHERE name = 'sample'"); got != 0 {
 		t.Fatalf("old table survived recreation: %d", got)
 	}
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 2 {
-		t.Fatalf("new schema version = %d, want 2", got)
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 3 {
+		t.Fatalf("new schema version = %d, want 3", got)
 	}
 }
 
@@ -260,7 +260,7 @@ func TestOpenUpgradesOlderDatabaseAndRetainsData(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openStore(t, root)
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 2 {
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 3 {
 		t.Fatalf("upgraded version = %d", got)
 	}
 	if got := queryInt(t, s.DB(), "SELECT value FROM sample"); got != 42 {
@@ -640,5 +640,61 @@ func TestStoreWorker(t *testing.T) {
 	s := openStore(t, root)
 	if err := ApplyMigrations(t.Context(), s.DB(), []Migration{{1, ""}, {2, "CREATE TABLE partial (value INTEGER); SELECT wait_for_kill()"}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConcurrentProcessLogMigrationRetainsVersionTwoLedger(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".sre-agent"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	db := rawDB(t, filepath.Join(root, ".sre-agent", "sre.db"))
+	if err := ApplyMigrations(t.Context(), db, migrations[:2]); err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, db, "INSERT INTO runs(id,problem,created_at) VALUES ('one','preserved','2026-11-12T00:00:00Z')")
+	execSQL(t, db, "INSERT INTO run_sessions(session_id,run_id) VALUES ('session','one')")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Go(func() {
+			s, err := Open(t.Context(), root)
+			if err == nil {
+				err = s.Close()
+			}
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := openStore(t, root)
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 3 {
+		t.Fatalf("schema %d", got)
+	}
+	if queryInt(t, s.DB(), "SELECT count(*) FROM runs WHERE id='one' AND problem='preserved' AND next_seq=1") != 1 || queryInt(t, s.DB(), "SELECT count(*) FROM run_sessions WHERE session_id='session' AND run_id='one'") != 1 {
+		t.Fatal("ledger data changed")
+	}
+	insert := `INSERT INTO commands(session_id,tool_use_id,run_id,recorded_at,agent,tool,command,path,outcome) VALUES ('session','call',?,'2026-11-12T00:00:00Z','sre-k8s-investigator','Bash','kubectl get pods','','unknown')`
+	execSQL(t, s.DB(), "PRAGMA foreign_keys=ON")
+	execSQL(t, s.DB(), insert, "one")
+	if _, err := s.DB().Exec(insert, "one"); err == nil {
+		t.Fatal("duplicate identity accepted")
+	}
+	if _, err := s.DB().Exec("UPDATE commands SET run_id='missing'"); err == nil {
+		t.Fatal("unknown run accepted")
+	}
+	if _, err := s.DB().Exec("UPDATE commands SET duration_ms=-1"); err == nil {
+		t.Fatal("negative duration accepted")
+	}
+	if queryInt(t, s.DB(), "SELECT count(*) FROM commands WHERE exit_status IS NULL AND duration_ms IS NULL AND guard_decision IS NULL") != 1 {
+		t.Fatal("nullable fields changed")
 	}
 }

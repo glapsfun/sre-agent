@@ -13,6 +13,7 @@ import (
 
 	"github.com/glapsfun/sre-agent/internal/discover"
 	"github.com/glapsfun/sre-agent/internal/logs"
+	"github.com/glapsfun/sre-agent/internal/processlog"
 	"github.com/glapsfun/sre-agent/internal/prom"
 	"github.com/glapsfun/sre-agent/internal/safety"
 	"github.com/glapsfun/sre-agent/internal/timeline"
@@ -46,10 +47,18 @@ func run(args []string, stdout, stderr io.Writer, dispatch func(string) (any, er
 }
 
 func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, dispatch func(string) (any, error)) int {
+	if len(args) == 2 && args[0] == "hook" && args[1] == "pre" {
+		return runHookPre(stdin, stderr)
+	}
+	if len(args) == 2 && args[0] == "hook" && args[1] == "post" {
+		return runHookPost(stdin, stderr)
+	}
 	format, command, opts, err := parse(args)
 	var data any
 	if err == nil {
-		if isLedgerCommand(command) {
+		if command == "log" {
+			data, err = executeProcessLog(context.Background(), opts.processlog)
+		} else if isLedgerCommand(command) {
 			return runLedger(command, opts.ledger, format, stdin, stdout, stderr)
 		} else if command == "timeline" {
 			var report timeline.Report
@@ -105,7 +114,9 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 	}
 	var writeErr error
 	if format == "text" {
-		if report, ok := data.(prom.Report); ok && err == nil {
+		if report, ok := data.(processlog.Report); ok && err == nil {
+			writeErr = writeProcessLogText(stdout, report)
+		} else if report, ok := data.(prom.Report); ok && err == nil {
 			writeErr = writePromText(stdout, report)
 		} else if report, ok := data.(logs.Report); ok && err == nil {
 			writeErr = writeLogsText(stdout, report)
@@ -155,11 +166,12 @@ func writeLogsText(out io.Writer, report logs.Report) error {
 }
 
 type commandOptions struct {
-	discovery discover.Options
-	logs      logs.PodOptions
-	prom      prom.Options
-	timeline  timeline.Options
-	ledger    ledgerOptions
+	discovery  discover.Options
+	logs       logs.PodOptions
+	prom       prom.Options
+	timeline   timeline.Options
+	ledger     ledgerOptions
+	processlog processLogOptions
 }
 
 func parse(args []string) (string, string, commandOptions, error) {
@@ -170,6 +182,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 	promFlag, timeoutFlag := false, false
 	timelineFlag, namespaceFlag, sinceFlag := false, false, false
 	repoFlag := false
+	processLogFlag := false
 	ledgerFlags := map[string]bool{}
 	invalid := func(message string) (string, string, commandOptions, error) {
 		return "json", "", opts, errors.New(message)
@@ -182,11 +195,11 @@ func parse(args []string) (string, string, commandOptions, error) {
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset":
+		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset", "--slowest", "--blocked", "--by-investigator":
 		default:
 			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline --namespace NS [--format json|text]")
 		}
-		if name == "--previous" && !hasValue {
+		if (name == "--previous" || name == "--blocked" || name == "--by-investigator") && !hasValue {
 			value, hasValue = "true", true
 		}
 		if !hasValue {
@@ -199,6 +212,25 @@ func parse(args []string) (string, string, commandOptions, error) {
 		switch name {
 		case "--format":
 			format = value
+		case "--slowest", "--blocked", "--by-investigator":
+			processLogFlag = true
+			if name == "--slowest" {
+				n, err := strconv.Atoi(value)
+				if err != nil || n <= 0 {
+					return invalid("slowest must be a positive integer")
+				}
+				opts.processlog.filter.Slowest = n
+			} else {
+				enabled, err := strconv.ParseBool(value)
+				if err != nil {
+					return invalid(name + " must be true or false")
+				}
+				if name == "--blocked" {
+					opts.processlog.filter.Blocked = enabled
+				} else {
+					opts.processlog.filter.ByInvestigator = enabled
+				}
+			}
 		case "--id", "--session-id", "--run", "--file", "--offset":
 			ledgerFlags[name] = true
 			if err := opts.ledger.set(name, value); err != nil {
@@ -270,6 +302,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 			case "--repo":
 				opts.timeline.Repo = value
 				opts.ledger.repo = value
+				opts.processlog.repo = value
 			case "--alertmanager-url":
 				opts.timeline.AlertmanagerURL = value
 			}
@@ -315,6 +348,19 @@ func parse(args []string) (string, string, commandOptions, error) {
 	if len(positional) == 3 && positional[0] == "prom" && positional[1] == "query" {
 		command = "prom query"
 		opts.prom.Query = positional[2]
+	}
+	if len(positional) > 0 && positional[0] == "log" {
+		if len(positional) != 2 {
+			return invalid("usage: sre log RUN_ID [--slowest N] [--blocked] [--by-investigator]")
+		}
+		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag || timelineFlag || namespaceFlag || sinceFlag || len(ledgerFlags) > 0 {
+			return invalid("command flags do not apply to log")
+		}
+		opts.processlog.runID = positional[1]
+		return format, "log", opts, nil
+	}
+	if processLogFlag {
+		return invalid("process log flags require log")
 	}
 	if len(positional) >= 2 && (positional[0] == "run" || positional[0] == "ledger") {
 		command = strings.Join(positional[:2], " ")

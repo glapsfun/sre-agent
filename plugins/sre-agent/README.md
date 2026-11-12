@@ -43,7 +43,9 @@ the playbooks.
 
 Run `skills/sre-agent/scripts/sre version` from this plugin directory. The
 launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
-on amd64 or arm64. It requires Bash, curl, and either sha256sum or shasum.
+on amd64 or arm64. It requires Bash, curl, and a SHA-256 tool: OpenSSL,
+sha256sum, or shasum.
+It prefers OpenSSL when available and verifies all binary bytes on every launch.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
 Use `--format text` for a readable text view. Source builds provide `version`,
 `discover`, `logs fold`, `prom query`, `timeline`, `run`, and `ledger`; the
@@ -292,8 +294,49 @@ recorded as a gap. It also blocks reads of common credential files.
 
 It stops mistakes and simple prompt injection, but it's not a sandbox. It can't see inside a script it
 allows, a GET request can still carry data out, and it doesn't cover the main conversation, which is where
-approved fixes run. It needs `python3`. Without it, the investigators are blocked and the skill runs their
-playbooks inline.
+approved fixes run. The packaged Go checker runs through the checksum-verified launcher. If it cannot
+start, investigator calls fail closed; the main conversation and other agents remain outside the guard.
+
+The pre-hook records each recognized investigator call in the repository's `.sre-agent/sre.db`.
+Post success/failure hooks reconcile the same `(session_id, tool_use_id)` row. `guard=allowed` only
+means the guard allowed the request; `outcome=unknown` does not establish execution or success.
+Logging errors produce a nonblocking diagnostic and never change the guard's decision.
+
+Bind the harness session when starting a run, or set `SRE_RUN_ID` to an existing run before launching
+the harness. An explicit run ID takes precedence over session binding; hooks never select the latest run.
+
+```bash
+sre run start 'Investigate API latency' --id incident-1 --session-id SESSION_ID
+sre log incident-1 --format text
+sre log incident-1 --slowest 10 --by-investigator
+sre log incident-1 --blocked --repo /path/to/repository
+```
+
+`log` defaults to JSON. Filters combine; investigator counts describe the selected rows after limiting.
+Measured durations sort before unknown durations, with stable observation/session/call ordering for ties.
+The timestamp records the first observation, not a tool start time. Absent duration and numeric exit
+status remain null. The hook adapter does not infer process exit status from tool output or failure text.
+
+Metadata contains sanitized command/path text, never complete inputs, responses, or failure messages.
+Credential patterns, sensitive shell assignments, and user credential flags, including curl clusters,
+are redacted before writing. Ambiguous credential arguments cause the
+entire command text to be stored as `[REDACTED]`; simple values retain sanitized command context.
+Identity fields that require redaction are rejected to avoid identity collisions. Do not place arbitrary
+secret values in commands or identifiers.
+The first observation pins the validated run and call metadata. Contradictory events or metadata produce
+an absorbing `conflict` outcome and clear numeric metrics; a run-binding conflict leaves the original row
+unchanged and emits a diagnostic. Repeated delivery cannot create another row for the same call.
+
+The matchers cover every declared investigator tool: Bash, Read, Grep, Glob and WebFetch, plus
+`mcp__plugin_sre-agent_sre__.*`. Glob records only its optional sanitized path; WebFetch records its
+sanitized URL in the existing `path` field. Glob patterns, WebFetch prompts and responses are omitted.
+Only the seven planned MCP read operations are allowed: `discover`, `logs_fold`, `prom_query`,
+`timeline`, `recall`, `run_resume`, and `report`. `ledger_add` and unknown operations in this namespace are blocked for investigators.
+
+Calls with no delivered hook cannot be logged. Permission denial can omit a post event, and schema
+rejection can omit both events. Legacy pre events with all of `session_id`, `tool_use_id`, and `cwd`
+absent remain guard-only; partially supplied or invalid metadata emits a logging diagnostic. Live MCP
+and harness acceptance remain separate from the local hook-shaped integration tests.
 
 The hard limit is a read-only identity, so investigate under a context that can't write:
 
