@@ -55,6 +55,15 @@ func alertFailure(ctx context.Context, code, message string) SourceResult {
 	return externalFailure("alertmanager", code, message)
 }
 
+func alertTransportFailure(ctx context.Context, err error, message string) SourceResult {
+	code := "error"
+	var timeout interface{ Timeout() bool }
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || (errors.As(err, &timeout) && timeout.Timeout()) {
+		code = "timeout"
+	}
+	return alertFailure(ctx, code, message)
+}
+
 func CollectAlerts(ctx context.Context, scope Scope, client HTTPDoer) SourceResult {
 	result := newKubeResult("alertmanager")
 	if scope.AlertmanagerURL == "" {
@@ -87,12 +96,7 @@ func CollectAlerts(ctx context.Context, scope Scope, client HTTPDoer) SourceResu
 	request.Header.Set("Accept", "application/json")
 	response, err := alertClient(client).Do(request)
 	if err != nil {
-		code := "error"
-		var timeout interface{ Timeout() bool }
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || (errors.As(err, &timeout) && timeout.Timeout()) {
-			code = "timeout"
-		}
-		return alertFailure(ctx, code, "Alertmanager request failed")
+		return alertTransportFailure(ctx, err, "Alertmanager request failed")
 	}
 	if response == nil || response.Body == nil {
 		return alertFailure(ctx, "error", "Alertmanager returned no response body")
@@ -107,7 +111,7 @@ func CollectAlerts(ctx context.Context, scope Scope, client HTTPDoer) SourceResu
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxAlertResponseBytes+1))
 	if err != nil {
-		return alertFailure(ctx, "error", "Alertmanager response could not be read")
+		return alertTransportFailure(ctx, err, "Alertmanager response could not be read")
 	}
 	if len(body) > maxAlertResponseBytes {
 		return alertFailure(ctx, "error", "Alertmanager response exceeds 16 MiB limit")

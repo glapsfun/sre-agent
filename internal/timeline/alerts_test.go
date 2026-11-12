@@ -3,8 +3,10 @@ package timeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -293,4 +295,52 @@ func TestAlertTransportFailures(t *testing.T) {
 			t.Fatalf("result=%+v", r)
 		}
 	})
+}
+
+type alertReadError struct{ err error }
+
+func (r alertReadError) Read([]byte) (int, error) { return 0, r.err }
+
+func TestAlertTransportBodyFailures(t *testing.T) {
+	body := fixture(t, "alerts")
+	t.Run("client timeout after headers", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, body)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		defer server.Close()
+		client := server.Client()
+		client.Timeout = 20 * time.Millisecond
+		scope := alertScope(t)
+		scope.AlertmanagerURL = server.URL
+		result := CollectAlerts(context.Background(), scope, client)
+		if result.Summary.Status != "timeout" || !hasGap(result, "timeout") || len(result.Errors) == 0 || len(result.Entries) != 0 || result.Summary.Observed != 0 {
+			t.Fatalf("body timeout result=%+v", result)
+		}
+	})
+	for _, tc := range []struct {
+		name, status string
+		err          error
+	}{
+		{"deadline", "timeout", context.DeadlineExceeded},
+		{"canceled", "timeout", context.Canceled},
+		{"transport timeout", "timeout", &net.DNSError{Err: "body-hidden", IsTimeout: true}},
+		{"ordinary read failure", "error", errors.New("body-hidden")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := alertScope(t)
+			scope.AlertmanagerURL = "https://alerts.example.invalid?token=url-hidden"
+			result := CollectAlerts(context.Background(), scope, alertDoerFunc(func(*http.Request) (*http.Response, error) {
+				reader := io.MultiReader(strings.NewReader(body), alertReadError{fmt.Errorf("token=body-hidden: %w", tc.err)})
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(reader)}, nil
+			}))
+			if result.Summary.Status != tc.status || !hasGap(result, tc.status) || len(result.Errors) == 0 || len(result.Entries) != 0 || result.Summary.Observed != 0 {
+				t.Fatalf("body failure result=%+v", result)
+			}
+			if strings.Contains(fmt.Sprint(result), "hidden") {
+				t.Fatalf("unsafe diagnostics=%+v", result)
+			}
+		})
+	}
 }
