@@ -64,6 +64,16 @@ CREATE TABLE commands (
     PRIMARY KEY(session_id, tool_use_id)
 );
 CREATE INDEX commands_run ON commands(run_id, recorded_at, session_id, tool_use_id);
+`}, {Version: 4, SQL: `
+CREATE TABLE incidents (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id),
+    through_seq INTEGER NOT NULL,
+    captured_at TEXT NOT NULL,
+    service TEXT NOT NULL,
+    symptom TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    record_json TEXT NOT NULL CHECK(json_valid(record_json))
+);
 `}}
 
 // ApplyMigrations applies all pending versions atomically. SQL is trusted,

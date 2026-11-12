@@ -265,7 +265,7 @@ func TestEveryTypedReferenceAndPragmas(t *testing.T) {
 	if got := ledgerInt(t, db.DB(), "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout=%d", got)
 	}
-	if got := ledgerInt(t, db.DB(), "PRAGMA user_version"); got != 3 {
+	if got := ledgerInt(t, db.DB(), "PRAGMA user_version"); got != 4 {
 		t.Fatalf("schema=%d", got)
 	}
 	if got := ledgerInt(t, db.DB(), "SELECT count(*) FROM ledger_refs"); got != 11 {
@@ -747,7 +747,7 @@ func TestLedgerMigrationUpgradesVersionOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, db := openLedger(t, root)
-	if ledgerInt(t, db.DB(), "PRAGMA user_version") != 3 || ledgerInt(t, db.DB(), "SELECT count(*) FROM preserved WHERE value='old'") != 1 {
+	if ledgerInt(t, db.DB(), "PRAGMA user_version") != 4 || ledgerInt(t, db.DB(), "SELECT count(*) FROM preserved WHERE value='old'") != 1 {
 		t.Fatal("version1 migration lost previous data")
 	}
 	for _, name := range []string{"runs", "ledger_entries", "ledger_refs", "run_sessions"} {

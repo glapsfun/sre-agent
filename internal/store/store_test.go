@@ -244,8 +244,8 @@ func TestOpenRecreatesDeletedDatabaseEmpty(t *testing.T) {
 	if got := queryInt(t, s.DB(), "SELECT count(*) FROM sqlite_master WHERE name = 'sample'"); got != 0 {
 		t.Fatalf("old table survived recreation: %d", got)
 	}
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 3 {
-		t.Fatalf("new schema version = %d, want 3", got)
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 4 {
+		t.Fatalf("new schema version = %d, want 4", got)
 	}
 }
 
@@ -260,7 +260,7 @@ func TestOpenUpgradesOlderDatabaseAndRetainsData(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openStore(t, root)
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 3 {
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 4 {
 		t.Fatalf("upgraded version = %d", got)
 	}
 	if got := queryInt(t, s.DB(), "SELECT value FROM sample"); got != 42 {
@@ -676,7 +676,7 @@ func TestConcurrentProcessLogMigrationRetainsVersionTwoLedger(t *testing.T) {
 		}
 	}
 	s := openStore(t, root)
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 3 {
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 4 {
 		t.Fatalf("schema %d", got)
 	}
 	if queryInt(t, s.DB(), "SELECT count(*) FROM runs WHERE id='one' AND problem='preserved' AND next_seq=1") != 1 || queryInt(t, s.DB(), "SELECT count(*) FROM run_sessions WHERE session_id='session' AND run_id='one'") != 1 {

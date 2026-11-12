@@ -48,7 +48,8 @@ sha256sum, or shasum.
 It prefers OpenSSL when available and verifies all binary bytes on every launch.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
 Use `--format text` for a readable text view. Source builds provide `version`,
-`discover`, `logs fold`, `prom query`, `timeline`, `run`, and `ledger`; the
+`discover`, `logs fold`, `prom query`, `timeline`, `run`, `ledger`,
+`incident add`, and `recall`; the
 existing investigation scripts remain available.
 The pinned release may not yet include the source build's newer commands.
 
@@ -138,7 +139,7 @@ next use.
 
 The investigation ledger stores append-only typed updates and redacts secret
 values before each committed write. Existing incident Markdown and project
-memos stay in place. Incident capture and process log commands are separate work.
+memos stay in place.
 
 ```bash
 sre run start "checkout errors" --id checkout-run --repo ./checkout
@@ -161,7 +162,7 @@ with the same ID after uncertain completion. Run and entry IDs use 1-128 ASCII
 letters, digits, underscores or hyphens. Start generates a random run ID when
 `--id` is omitted. Retain the returned ID.
 
-Writes require `--run` or `SRE_RUN_ID`. An explicit resume ID takes precedence
+Ledger adds require `--run` or `SRE_RUN_ID`. An explicit resume ID takes precedence
 over that variable; without either, resume reads the latest created run. Empty
 storage reports `no runs recorded` and does not start a run. `--repo` resolves
 the Git root, including when called from a subdirectory. `--session-id` on start
@@ -188,6 +189,44 @@ run and entry; retry an uncertain add with the same ID. Record each update
 immediately and resume after compaction or a new session. Ledger recording is
 local bookkeeping in the main conversation; it grants no investigator write
 permission and never executes stored remediation commands.
+
+Validated incidents are captured from an explicit ledger run in the same local
+store. Capture requires an applied remediation with every current expected
+criterion passing, including any declared observation windows.
+
+```bash
+sre incident add --run checkout-run --service checkout --symptom errors --fingerprint "checkout HTTP 503" --repo ./checkout
+sre recall --service checkout --symptom errors --fingerprint "checkout HTTP 503" --top 5 --repo ./checkout
+sre recall --service checkout --symptom errors --fingerprint "checkout HTTP 503" --repo ./checkout --format text
+```
+
+`incident add` requires explicit `--run`; it never uses `SRE_RUN_ID` or the
+latest run. Service and fingerprint must be nonempty. Canonical symptom classes
+are `crashloop`, `latency`, `errors`, `metrics`, `oom`, `networking`, and
+`availability`. Map descriptive symptoms to these before calling. `--top`
+defaults to 5 and must be positive. JSON `data.matches` retains typed incident
+records, numeric `score` and `similarity`, and `reasons`; `total` counts all
+ranked candidates before limiting. Empty history returns `matches: []`,
+`total: 0`, and `message: "no incident history"`. JSON and text mark historical
+content as untrusted data with one fresh `begin`/`finish` boundary, including
+nested text and map keys. Scores are local ranking heuristics, not confidence
+estimates or proof of a shared cause.
+
+Recall reads historical captures without changing ledger or incident rows and
+never executes stored fixes. Confirm candidates against current evidence and
+follow approval, dry-run and validation for every proposed remediation. Capture
+returns `committed`, `run_id` and `through_seq`; presentation failure preserves
+that receipt with a gap, and output failure reports the committed identity on
+stderr. Retry with the same explicit run and signature: an unchanged snapshot
+preserves the capture time; a later validated snapshot replaces the same row.
+Invalid recapture leaves the previous validated incident intact.
+
+Existing `docs/sre-incidents/INDEX.md` and incident files remain an explicit
+legacy/manual source. The CLI does not import or export them, or stage, commit or
+push files.
+The project memo workflow remains separate. See
+[`incident-memory.md`](skills/sre-agent/references/incident-memory.md) for the
+Phase 4 and Phase 6 workflow.
 
 ## How to use
 
