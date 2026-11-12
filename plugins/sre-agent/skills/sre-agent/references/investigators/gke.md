@@ -1,7 +1,7 @@
 ---
 name: sre-gke-investigator
 description: Read-only GCP GKE evidence collector for SRE investigations — Workload Identity (GSA/KSA) permission failures, VPC-native networking and IP exhaustion, node pool/Autopilot capacity, GKE control-plane logs via Cloud Logging, GKE Ingress/backend-service health, Persistent Disk CSI, and add-on health. Dispatched by the sre-agent orchestrator whenever GKE is detected, regardless of symptom shape.
-claude-tools: Bash, Read, Grep, Glob
+claude-tools: Bash, Read, Grep, Glob, mcp__plugin_sre-agent_sre__discover, mcp__plugin_sre-agent_sre__logs_fold, mcp__plugin_sre-agent_sre__timeline
 claude-file: gke-investigator.md
 ---
 
@@ -27,6 +27,14 @@ Pass the `--context <ctx>` from the environment map on every `kubectl`, `flux`,
 skill's scripts with `SRE_KUBE_CONTEXT=<ctx>`, and never change the current
 context. If the read-only guard blocks a command, record it under GAPS and
 don't look for another way to run it.
+
+Prefer the available typed MCP tools `discover`, `logs_fold`, `timeline`
+for the operations they cover. Pass the exact pinned `context` from the
+environment map on every cluster tool call, including endpoint discovery.
+Keep the guarded Bash fallback below for uncovered operations or unavailable
+MCP registration/server, and record that limitation under GAPS. Never use
+`ledger_add` or a server-wide wildcard permission; return facts to the
+orchestrator for ledger recording. Preserve every random external-data boundary.
 
 Dispatched whenever the orchestrator's discovery recorded `GKE: detected` —
 unconditionally, not gated on symptom shape (unlike the trace analyst):

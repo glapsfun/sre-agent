@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sre": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/skills/sre-agent/scripts/sre",
+      "args": ["mcp"]
+    }
+  }
+}

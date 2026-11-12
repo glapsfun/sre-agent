@@ -15,8 +15,11 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import select
+import sqlite3
 import subprocess
 import sys
+import time
 
 work = Path(sys.argv[1])
 root = Path.cwd()
@@ -90,4 +93,63 @@ expect("checker failure investigator", event("kubectl get pods"), 2, failed_env)
 expect("checker failure main", event("kubectl delete pod x", None), 0, failed_env)
 expect("checker failure other", event("kubectl delete pod x", "general-purpose"), 0, failed_env)
 print("PASS: Go hook wiring, no-Python runtime, missing checker and runtime failure controls")
+
+# Exercise the configured hooks around a real stdio call with harness-shaped metadata.
+# This checks reconciliation, not a live Claude session or its variable substitution.
+repo = work / "mcp-repo"
+repo.mkdir()
+subprocess.run(["git", "init", "-q", str(repo)], check=True)
+call_env = dict(env)
+call_env.pop("SRE_RUN_ID", None)
+subprocess.run([str(launcher), "run", "start", "MCP hook test", "--id", "mcp-run", "--session-id", "mcp-session", "--repo", str(repo)], env=call_env, check=True, capture_output=True)
+hooks = json.loads((root / "plugins/sre-agent/hooks/hooks.json").read_text())["hooks"]
+payload = {
+    "session_id": "mcp-session", "tool_use_id": "mcp-call", "cwd": str(repo),
+    "agent_type": agent, "hook_event_name": "PreToolUse",
+    "tool_name": "mcp__plugin_sre-agent_sre__logs_fold",
+    "tool_input": {"context": "fixture-context", "text": "ERROR mcp-raw-response-sentinel"},
+}
+
+def deliver(phase):
+    cmd = hooks[phase][0]["hooks"][0]["command"]
+    result = subprocess.run(["bash", "-c", cmd], input=json.dumps(payload), text=True, capture_output=True, env=call_env)
+    assert result.returncode == 0 and not result.stdout and not result.stderr, result
+
+deliver("PreToolUse")
+deliver("PreToolUse")
+server = subprocess.Popen([str(launcher), "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=call_env, cwd=repo)
+
+def send(message):
+    server.stdin.write(json.dumps(message) + "\n")
+    server.stdin.flush()
+
+def receive(ident):
+    assert select.select([server.stdout], [], [], 15)[0], "MCP response timeout"
+    message = json.loads(server.stdout.readline())
+    assert message["id"] == ident and "error" not in message, message
+    return message["result"]
+
+try:
+    send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "packaging-test", "version": "1"}}})
+    receive(1)
+    send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    started = time.monotonic()
+    send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "logs_fold", "arguments": payload["tool_input"]}})
+    response = receive(2)
+    duration = int((time.monotonic() - started) * 1000)
+    assert not response.get("isError") and response["structuredContent"]["ok"], response
+    assert "mcp-raw-response-sentinel" in json.dumps(response), response
+    payload.update(hook_event_name="PostToolUse", tool_response=response, duration_ms=duration)
+    deliver("PostToolUse")
+    deliver("PostToolUse")
+finally:
+    server.stdin.close()
+    server.wait(timeout=15)
+assert server.returncode == 0 and not server.stderr.read(), "MCP shutdown failed"
+with sqlite3.connect(repo / ".sre-agent/sre.db") as db:
+    rows = db.execute("SELECT session_id, tool_use_id, run_id, tool, guard_decision, outcome, duration_ms, exit_status FROM commands").fetchall()
+assert rows == [("mcp-session", "mcp-call", "mcp-run", "mcp__plugin_sre-agent_sre__logs_fold", "allowed", "succeeded", duration, None)], rows
+for path in (repo / ".sre-agent").glob("sre.db*"):
+    assert b"mcp-raw-response-sentinel" not in path.read_bytes(), path
+print("PASS: real MCP call reconciles to one successful session/run-bound process row; raw input/response omitted")
 PY
