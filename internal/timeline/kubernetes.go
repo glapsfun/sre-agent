@@ -150,7 +150,18 @@ func CollectEvents(ctx context.Context, scope Scope, kube KubeRunner) SourceResu
 			return nil
 		}
 		redact := safety.NewRedactor()
-		details := map[string]any{"type": redact.Redact(event.Type), "reason": redact.Redact(event.Reason), "message": redact.Redact(event.Message), "count": event.Count}
+		details := map[string]any{"count": event.Count}
+		for _, field := range []struct{ name, value string }{{"type", event.Type}, {"reason", event.Reason}, {"message", event.Message}} {
+			clean, err := redact.RedactContext(ctx, field.value)
+			if err != nil {
+				return err
+			}
+			details[field.name] = clean
+		}
+		change, err := redact.RedactContext(ctx, event.Reason+": "+event.Message)
+		if err != nil {
+			return err
+		}
 		// Keep observed endpoints, not synthesized occurrences for aggregate counts.
 		for _, candidate := range candidates {
 			if parsed, e := time.Parse(time.RFC3339Nano, candidate.value); e == nil && !parsed.IsZero() {
@@ -160,7 +171,7 @@ func CollectEvents(ctx context.Context, scope Scope, kube KubeRunner) SourceResu
 		if event.Series != nil {
 			details["series.count"] = event.Series.Count
 		}
-		result.Entries = append(result.Entries, Entry{ID: event.Metadata.UID, Time: stamp, TimeBasis: basis, Source: result.Summary.Source, Object: ref, Change: redact.Redact(event.Reason + ": " + event.Message), Command: kubeCommand(scope, "events"), Details: details})
+		result.Entries = append(result.Entries, Entry{ID: event.Metadata.UID, Time: stamp, TimeBasis: basis, Source: result.Summary.Source, Object: ref, Change: change, Command: kubeCommand(scope, "events"), Details: details})
 		return ctx.Err()
 	})
 	if err != nil {
@@ -227,8 +238,11 @@ func CollectReplicaSets(ctx context.Context, scope Scope, kube KubeRunner) Sourc
 		}
 		owners[owner.UID] = deployment
 		result.Summary.Matched++
-		projected, excluded, e := ProjectTemplate(rs.Spec.Template)
+		projected, excluded, e := projectTemplate(ctx, rs.Spec.Template)
 		if e != nil {
+			if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+				return e
+			}
 			sourceGap(&result, "error", "invalid ReplicaSet pod template; record omitted")
 			return nil
 		}

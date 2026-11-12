@@ -1,10 +1,13 @@
 package timeline
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTemplateSecretsNeverEscape(t *testing.T) {
@@ -178,5 +181,42 @@ func TestTemplateEnvironmentNamesDoNotRelaxOtherIdentities(t *testing.T) {
 		if err == nil {
 			t.Errorf("invalid identity accepted: %s", raw)
 		}
+	}
+}
+
+func TestTemplateProcessingCancellationAfterDecode(t *testing.T) {
+	large := strings.Repeat("x", 6<<20)
+	for _, field := range []string{"scalar", "dynamic key", "environment identity"} {
+		t.Run(field, func(t *testing.T) {
+			container := map[string]any{"name": "api", "image": "app:v1"}
+			spec := map[string]any{"containers": []any{container}}
+			switch field {
+			case "scalar":
+				container["image"] = large
+			case "dynamic key":
+				spec["nodeSelector"] = map[string]any{large: "batch"}
+			case "environment identity":
+				container["env"] = []any{map[string]any{"name": large, "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "credentials", "key": "login"}}}}
+			}
+			raw, err := json.Marshal(map[string]any{"spec": spec})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			// Start the budget after parsing so early reader cancellation cannot hide
+			// an uninterruptible projection or identity-redaction path.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			err = projectTemplateField(ctx, decoded, templateSchema, "", map[string]any{}, map[string]bool{})
+			elapsed := time.Since(start)
+			if !errors.Is(err, context.DeadlineExceeded) || elapsed > 300*time.Millisecond {
+				t.Fatalf("projection cancellation: elapsed=%s error=%v", elapsed, err)
+			}
+			t.Logf("elapsed=%s; cancellation observed after decode", elapsed)
+		})
 	}
 }

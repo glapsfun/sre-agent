@@ -2,6 +2,7 @@ package timeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -172,5 +173,62 @@ func TestCollectUnresolvedWorkloadRetainsMissingEndpointGap(t *testing.T) {
 	}
 	if !missing || !association {
 		t.Fatalf("gaps=%+v", report.Gaps)
+	}
+}
+
+func TestCollectSourceProcessingDeadline(t *testing.T) {
+	t.Setenv("SRE_ALERTMANAGER_URL", "")
+	large := strings.Repeat("x", 6<<20)
+	event := eventRecord("large-event")
+	event["message"] = large
+	var list map[string]any
+	if err := json.Unmarshal([]byte(fixture(t, "replicasets")), &list); err != nil {
+		t.Fatal(err)
+	}
+	rs := list["items"].([]any)[1].(map[string]any)
+	template := rs["spec"].(map[string]any)["template"].(map[string]any)
+	template["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["image"] = large
+	list["items"] = []any{rs}
+	rsBody, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ resource, source, body string }{
+		{"events", "kubernetes-events", eventList(event)},
+		{"replicasets.apps", "replicasets", string(rsBody)},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			var active atomic.Int32
+			kube := streamKube{stream: func(ctx context.Context, out io.Writer, args ...string) executil.Result {
+				active.Add(1)
+				defer active.Add(-1)
+				body := eventList()
+				if args[1] == tc.resource {
+					body = tc.body
+				}
+				_, err := io.WriteString(out, body)
+				return executil.Result{Err: err}
+			}}
+			runner := gitRunner{run: func(context.Context, string, ...string) executil.Result { return executil.Result{Stdout: "false"} }, stream: func(_ context.Context, out io.Writer, _ string, _ ...string) executil.Result {
+				_, err := io.WriteString(out, strings.Repeat("a", 40)+"\x002026-11-11T11:00:00Z\x00independent commit\x00")
+				return executil.Result{Err: err}
+			}}
+			start := time.Now()
+			report, err := Collect(context.Background(), Options{Namespace: "ns", Repo: "repo", Timeout: time.Second}, Dependencies{Kube: kube, Runner: runner, Now: func() time.Time { return timelineScope().End }})
+			elapsed := time.Since(start)
+			if err != nil || active.Load() != 0 || len(report.Entries) != 1 || report.Entries[0].Source != "git" || report.Entries[0].Change != "independent commit" || len(report.Errors) == 0 {
+				t.Fatalf("elapsed=%s report=%+v err=%v active=%d", elapsed, report, err, active.Load())
+			}
+			status := ""
+			for _, source := range report.Sources {
+				if source.Source == tc.source {
+					status = source.Status
+				}
+			}
+			if status != "timeout" || elapsed > 1300*time.Millisecond {
+				t.Fatalf("source=%s status=%s elapsed=%s; one-second collection budget exceeded", tc.source, status, elapsed)
+			}
+			t.Logf("source=%s elapsed=%s; timed out batch discarded, independent git retained, workers joined", tc.source, elapsed)
+		})
 	}
 }

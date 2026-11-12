@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,9 +117,19 @@ func buildTemplateSchema() *templateField {
 // ProjectTemplate returns flat schema paths so container reorderings do not
 // masquerade as changes and image changes always identify their container.
 func ProjectTemplate(raw json.RawMessage) (map[string]any, []string, error) {
+	return projectTemplate(context.Background(), raw)
+}
+
+func projectTemplate(ctx context.Context, raw json.RawMessage) (map[string]any, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	var value any
 	if json.Unmarshal(raw, &value) != nil {
 		return nil, nil, errors.New("invalid pod template JSON")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -134,7 +145,7 @@ func ProjectTemplate(raw json.RawMessage) (map[string]any, []string, error) {
 	}
 	result := map[string]any{}
 	excluded := map[string]bool{}
-	if err := projectTemplateField(value, templateSchema, "", result, excluded); err != nil {
+	if err := projectTemplateField(ctx, value, templateSchema, "", result, excluded); err != nil {
 		return nil, nil, err
 	}
 	paths := make([]string, 0, len(excluded))
@@ -142,10 +153,16 @@ func ProjectTemplate(raw json.RawMessage) (map[string]any, []string, error) {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	return result, paths, nil
 }
 
-func projectTemplateField(value any, schema *templateField, path string, out map[string]any, excluded map[string]bool) error {
+func projectTemplateField(ctx context.Context, value any, schema *templateField, path string, out map[string]any, excluded map[string]bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	invalid := func() error { return errors.New("invalid pod template field type or identity") }
 	if schema.ignore || value == nil {
 		return nil
@@ -164,7 +181,11 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 			return invalid()
 		}
 		if text, ok := value.(string); ok {
-			value = safety.NewRedactor().Redact(text)
+			clean, err := safety.NewRedactor().RedactContext(ctx, text)
+			if err != nil {
+				return err
+			}
+			value = clean
 		}
 		out[path] = value
 		return nil
@@ -175,10 +196,13 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 			return invalid()
 		}
 		if schema.environment {
-			return projectEnvironment(values, schema.item, path, out, excluded)
+			return projectEnvironment(ctx, values, schema.item, path, out, excluded)
 		}
 		used := map[string]bool{}
 		for i, item := range values {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			key := fmt.Sprint(i)
 			if schema.named {
 				obj, ok := item.(map[string]any)
@@ -192,7 +216,7 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 				used[name] = true
 				key = name
 			}
-			if err := projectTemplateField(item, schema.item, path+"["+key+"]", out, excluded); err != nil {
+			if err := projectTemplateField(ctx, item, schema.item, path+"["+key+"]", out, excluded); err != nil {
 				return err
 			}
 		}
@@ -203,6 +227,9 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 		return invalid()
 	}
 	for key, item := range obj {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		child, ok := schema.fields[key]
 		if schema.dynamic {
 			child = schema.item
@@ -217,13 +244,17 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 			childPath = path + "." + key
 		}
 		if schema.dynamic {
-			childPath = path + "." + safety.NewRedactor().Redact(key)
+			clean, err := safety.NewRedactor().RedactContext(ctx, key)
+			if err != nil {
+				return err
+			}
+			childPath = path + "." + clean
 		}
 		if child == nil {
 			excluded[childPath] = true
 			continue
 		}
-		if err := projectTemplateField(item, child, childPath, out, excluded); err != nil {
+		if err := projectTemplateField(ctx, item, child, childPath, out, excluded); err != nil {
 			return err
 		}
 	}
@@ -232,10 +263,13 @@ func projectTemplateField(value any, schema *templateField, path string, out map
 
 // Environment names use relaxed API syntax. Quoting and occurrence indexes keep
 // punctuation and duplicate names from overwriting independent reference fields.
-func projectEnvironment(values []any, schema *templateField, path string, out map[string]any, excluded map[string]bool) error {
+func projectEnvironment(ctx context.Context, values []any, schema *templateField, path string, out map[string]any, excluded map[string]bool) error {
 	names := make([]string, len(values))
 	counts := map[string]int{}
 	for i, item := range values {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		obj, ok := item.(map[string]any)
 		if !ok {
 			return errors.New("invalid environment entry")
@@ -244,7 +278,12 @@ func projectEnvironment(values []any, schema *templateField, path string, out ma
 		if !ok || name == "" {
 			return errors.New("invalid environment identity")
 		}
-		for _, char := range name {
+		for offset, char := range name {
+			if offset%4096 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
 			if char < 32 || char > 126 || char == '=' {
 				return errors.New("invalid environment identity")
 			}
@@ -254,8 +293,15 @@ func projectEnvironment(values []any, schema *templateField, path string, out ma
 	}
 	occurrences := map[string]int{}
 	for i, item := range values {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		name := names[i]
-		if safety.NewRedactor().Redact(name) != name {
+		clean, err := safety.NewRedactor().RedactContext(ctx, name)
+		if err != nil {
+			return err
+		}
+		if clean != name {
 			excluded[path+"[*] (redacted environment identity)"] = true
 			continue
 		}
@@ -265,7 +311,7 @@ func projectEnvironment(values []any, schema *templateField, path string, out ma
 			itemPath += "[" + strconv.Itoa(occurrences[name]) + "]"
 			occurrences[name]++
 		}
-		if err := projectTemplateField(item, schema, itemPath, out, excluded); err != nil {
+		if err := projectTemplateField(ctx, item, schema, itemPath, out, excluded); err != nil {
 			return err
 		}
 	}
