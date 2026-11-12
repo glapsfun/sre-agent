@@ -243,7 +243,7 @@ func timestamp(at *time.Time) string {
 func literal(value string) string {
 	value = nonempty(safety.NewRedactor().Redact(value))
 	var out strings.Builder
-	for _, r := range value {
+	for i, r := range value {
 		switch r {
 		case '&':
 			out.WriteString("&amp;")
@@ -251,7 +251,15 @@ func literal(value string) string {
 			out.WriteString("&lt;")
 		case '>':
 			out.WriteString("&gt;")
-		case '\\', '`', '*', '_', '[', ']', '#', '|':
+		case '@':
+			out.WriteString("&#64;")
+		case '.':
+			if i >= 3 && strings.EqualFold(value[i-3:i], "www") {
+				out.WriteString("&#46;")
+			} else {
+				out.WriteRune(r)
+			}
+		case '\\', '`', '*', '_', '~', '[', ']', '#', '|':
 			out.WriteByte('\\')
 			out.WriteRune(r)
 		default:
@@ -262,5 +270,6 @@ func literal(value string) string {
 			}
 		}
 	}
-	return out.String()
+	// Break automatic links while retaining their displayed text in every field.
+	return strings.ReplaceAll(out.String(), "://", "&#58;//")
 }
