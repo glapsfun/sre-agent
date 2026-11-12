@@ -484,6 +484,17 @@ func TestConfiguredHookCommands(t *testing.T) {
 					input["url"] = "https://reader:omitted-url-credential@example.test/docs"
 					input["prompt"] = "omitted-fetch-prompt"
 					path = "https://[REDACTED]@example.test/docs"
+				case "mcp__plugin_sre-agent_sre__discover":
+					input["context"] = "omitted-context"
+				case "mcp__plugin_sre-agent_sre__logs_fold":
+					input["context"] = "omitted-context"
+					input["text"] = "omitted-log-body"
+				case "mcp__plugin_sre-agent_sre__prom_query":
+					input["context"] = "omitted-context"
+					input["query"] = "omitted-prom-query"
+				case "mcp__plugin_sre-agent_sre__timeline":
+					input["context"] = "omitted-context"
+					input["namespace"] = "omitted-namespace"
 				default:
 					t.Fatalf("declared tool requires a representative metadata fixture: %s", tool)
 				}

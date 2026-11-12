@@ -1,0 +1,10 @@
+{
+  "name": "sre-agent",
+  "version": "0.16.0",
+  "mcpServers": {
+    "sre": {
+      "command": "${extensionPath}/skills/sre-agent/scripts/sre",
+      "args": ["mcp"]
+    }
+  }
+}

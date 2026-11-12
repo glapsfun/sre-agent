@@ -39,6 +39,133 @@ For Claude Code always use `/plugin install` — it additionally registers the
 Codex, re-run `install-codex-agents.sh` so the subagents stay in sync with
 the playbooks.
 
+## MCP tools
+
+The source-built `sre mcp` command serves stdio only. It exposes exactly
+`discover`, `logs_fold`, `prom_query`, `timeline`, `recall`, `run_resume`,
+`ledger_add`, and `report`. It has no HTTP listener, resources, or authentication
+layer. stdout carries only MCP messages; diagnostics go to stderr.
+The launcher still pins `v0.17.0`, whose publication is tracked separately in
+issue #5. Local source-build tests do not establish that a release is available.
+
+Prefer available typed read tools for covered operations. Supply the exact
+nonempty pinned cluster `context` to `discover`, `logs_fold`, `prom_query`, and
+`timeline`, including inline log folding and automatic endpoint discovery.
+Preserve the random external-data boundaries in returned text. `run_resume`
+reads an explicit run without binding a session. `report` returns content and
+has no output-file argument. Use the guarded Bash fallback for uncovered
+operations or unavailable registration/server, and record the limitation.
+
+The recommended Claude read permissions are individually named:
+
+```text
+mcp__plugin_sre-agent_sre__discover
+mcp__plugin_sre-agent_sre__logs_fold
+mcp__plugin_sre-agent_sre__prom_query
+mcp__plugin_sre-agent_sre__timeline
+mcp__plugin_sre-agent_sre__recall
+mcp__plugin_sre-agent_sre__run_resume
+mcp__plugin_sre-agent_sre__report
+```
+
+Claude investigators receive only the subset relevant to their role: discovery for
+all seven; logs and timeline for Kubernetes/EKS/GKE; logs for the logs
+investigator; Prometheus queries for metrics; timeline for changes. Trace
+queries retain their guarded Bash recipes. Recall, resume, and report are
+available to the orchestrator. `ledger_add` is the sole write tool and requires
+a separate orchestrator permission decision. Never grant it to investigators.
+A server-wide wildcard such as `mcp__plugin_sre-agent_sre__*` includes ledger
+writes and is not the recommended read-only setup. `readOnlyHint` annotations
+describe tools; they do not enforce permissions or replace the guard.
+
+Claude loads plugin-root [`.mcp.json`](.mcp.json), whose command is
+`${CLAUDE_PLUGIN_ROOT}/skills/sre-agent/scripts/sre` with the separate argument
+`mcp`. Codex uses the portable [`plugin.json`](plugin.json) and
+[`mcp.json`](mcp.json): `bash` receives
+`${PLUGIN_ROOT}/skills/sre-agent/scripts/sre` and `mcp` as separate arguments.
+That portable layout started and called `discover` in an installed Codex
+0.167.1 fixture. The compatibility layout was recognized too, but needed an
+absolute launcher path because its root placeholders stayed literal in that
+runtime. These fixtures used a locally built binary, not a published release.
+
+Gemini's [`gemini-extension.json`](gemini-extension.json) declares server `sre`
+with `${extensionPath}/skills/sre-agent/scripts/sre` and the separate `mcp`
+argument, following the [extension reference](https://geminicli.com/docs/extensions/reference/).
+Gemini runtime expansion has not been tested locally because Gemini is absent.
+Keep the placeholders literal in manifest files; the named host must expand
+them. Parsing JSON alone does not verify startup or tool execution.
+
+### Required Codex investigator permissions
+
+Before starting a Codex investigation, install the seven-read allowlist in
+its **parent session**. Custom agent TOML files inherit parent MCP servers;
+their instructions cannot override that policy. Keep ledger writes in a
+separate orchestrator-only session that never spawns investigators. Do not
+add `ledger_add` to an investigation session or resume investigators from a
+write-enabled parent.
+
+For the bundled portable plugin, add this policy to your Codex `config.toml`.
+Replace `sre-agent@sre-agent` with the exact installed plugin ID, including
+its marketplace suffix, shown by `/plugins`:
+
+```toml
+[plugins."sre-agent@sre-agent".mcp_servers.sre]
+enabled_tools = ["discover", "logs_fold", "prom_query", "timeline", "recall", "run_resume", "report"]
+```
+
+For manual registration, locate the installed skill's executable `scripts/sre`
+or a verified source-built `sre`, then use this complete configuration:
+
+```toml
+[mcp_servers.sre]
+command = "/absolute/path/to/skills/sre-agent/scripts/sre"
+args = ["mcp"]
+enabled_tools = ["discover", "logs_fold", "prom_query", "timeline", "recall", "run_resume", "report"]
+```
+
+`codex mcp add sre -- /absolute/path/to/skills/sre-agent/scripts/sre mcp`
+registers the transport only. Add the allowlist before using investigators.
+Choose one registration path; disable duplicate SRE registrations that could
+expose unfiltered tools. These policies use the supported
+[Codex MCP tool allowlist](https://learn.chatgpt.com/docs/extend/mcp);
+[subagents inherit parent MCP configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+
+Start a fresh investigation session after setup. Before dispatching any
+investigator, inspect `/mcp` and verify the effective SRE tool list contains
+exactly the seven reads above and excludes `ledger_add`. Call `discover` with
+the pinned context to check startup. If the effective filter cannot be
+verified, disable that MCP registration for the investigation and use the
+guarded CLI fallback, recording the limitation. A role's prose restriction
+or a tool's read-only annotation is not proof of enforcement.
+
+In the separate orchestrator-only session, grant `ledger_add` only after the
+write-permission decision. Keep investigators in the filtered session and
+return their evidence to the orchestrator for recording. Retain the CLI
+ledger workflow when MCP write permission is unavailable.
+
+For [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers),
+use `/mcp add`, name the server `sre`, and enter the absolute launcher path
+followed by `mcp` in Command. Select only the seven read tools above (using the
+host's displayed tool names), with ledger writes decided separately.
+For [VS Code](https://code.visualstudio.com/docs/agents/reference/mcp-configuration),
+open Chat: Open Customizations, select MCP Servers, and add a stdio server
+named `sre` with that executable and argument. Copilot's native configuration
+uses `mcpServers`; older editor-managed `.vscode/mcp.json` uses `servers`.
+Neither client was runtime-tested for this packaging change.
+
+`npx skills` installs the skill without registering these plugin manifests.
+Use manual registration or keep the CLI and bundled scripts. When MCP is
+unavailable, locate the launcher and use `sre discover --context <ctx>`,
+`sre logs fold --context <ctx> --namespace <ns> --pod <pod>`,
+`sre prom query '<PromQL>' --context <ctx>`, or
+`sre timeline --context <ctx> --namespace <ns>` with the operation's remaining
+arguments. CLI stdin folding uses `sre logs fold < app.log` without cluster
+flags. Local reads use `sre recall`, `sre run resume <run-id>`, and
+`sre report <run-id>`. If the launcher or command is unavailable too, retain
+the existing discovery/evidence scripts and report the gap. Investigator Bash
+fallback remains subject to the read-only guard where installed and the
+read-only identity on every host; a denied call is not a reason to bypass it.
+
 ## CLI launcher
 
 Run `skills/sre-agent/scripts/sre version` from this plugin directory. The

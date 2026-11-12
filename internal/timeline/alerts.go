@@ -64,6 +64,14 @@ func alertTransportFailure(ctx context.Context, err error, message string) Sourc
 	return alertFailure(ctx, code, message)
 }
 
+func ParseAlertmanagerURL(raw string) (*url.URL, error) {
+	endpoint, err := url.Parse(raw)
+	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" {
+		return nil, errors.New("Alertmanager endpoint must be an HTTP(S) URL without userinfo or fragment")
+	}
+	return endpoint, nil
+}
+
 func CollectAlerts(ctx context.Context, scope Scope, client HTTPDoer) SourceResult {
 	result := newKubeResult("alertmanager")
 	if scope.AlertmanagerURL == "" {
@@ -76,9 +84,9 @@ func CollectAlerts(ctx context.Context, scope Scope, client HTTPDoer) SourceResu
 	if ctx.Err() != nil {
 		return alertFailure(ctx, "timeout", "")
 	}
-	endpoint, err := url.Parse(scope.AlertmanagerURL)
-	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" {
-		return alertFailure(ctx, "error", "Alertmanager endpoint must be an HTTP(S) URL without userinfo or fragment")
+	endpoint, err := ParseAlertmanagerURL(scope.AlertmanagerURL)
+	if err != nil {
+		return alertFailure(ctx, "error", err.Error())
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/v2/alerts"
 	if endpoint.RawPath != "" {

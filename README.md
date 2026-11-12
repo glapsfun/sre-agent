@@ -131,7 +131,7 @@ The path must point to the repo root (the directory containing
 Start an investigation explicitly with the slash command:
 
 ```text
-/sre-agent my payments service is crash-looping in prod, namespace payments
+/sre-agent investigate checkout errors using context production, namespace payments, workload deployment/checkout
 ```
 
 Or just describe the problem — the skill auto-triggers on incident-shaped
@@ -158,6 +158,38 @@ your repo under `docs/sre-incidents/`.
 
 See the [plugin README](plugins/sre-agent/README.md) for the full usage guide,
 the component breakdown, and the degraded-environment behavior.
+
+### Try the CLI from source
+
+Install the agent using one of the methods above, or run the CLI directly from
+this checkout with Go 1.26 or newer. The launcher's pinned `v0.17.0` release is
+not yet published (issue #5); these source commands do not need that release.
+
+```bash
+go run ./cmd/sre version
+SRE_SKIP_CLUSTER=true go run ./cmd/sre discover --context production --only env
+printf 'ERROR checkout unavailable\nERROR checkout unavailable\n' | go run ./cmd/sre logs fold --format text
+```
+
+The discovery example skips external probes and reports local tool availability.
+Log folding reads only the supplied text. To inspect a real cluster, use the
+explicit-context discovery examples below with your approved read-only identity.
+
+Start a local investigation record, resume it, and render its current report:
+
+```bash
+go run ./cmd/sre run start "checkout errors" --id checkout-run --repo .
+go run ./cmd/sre run resume checkout-run --repo .
+go run ./cmd/sre report checkout-run --repo . --format text
+```
+
+`--repo .` selects this repository's `.sre-agent/sre.db`; replace it with the
+incident repository path when needed. Keep the run ID for subsequent updates.
+A new run has no evidence or validation, so its report remains unresolved.
+See [ledger recording](plugins/sre-agent/README.md#local-database) for updates
+and [MCP setup and read permissions](plugins/sre-agent/README.md#mcp-tools) for
+typed tools, manual host registration, and CLI fallback. Ledger writes require
+separate orchestrator permission; investigators receive only named read tools.
 
 ## Discovery CLI
 

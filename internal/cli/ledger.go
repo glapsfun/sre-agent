@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/glapsfun/sre-agent/internal/ledger"
 	"github.com/glapsfun/sre-agent/internal/safety"
@@ -118,7 +119,11 @@ func runLedger(command string, opts ledgerOptions, format string, stdin io.Reade
 }
 
 func runLedgerWithView(command string, opts ledgerOptions, format string, stdin io.Reader, stdout, stderr io.Writer, present ledgerViewLoader) int {
-	result, gaps, err := executeLedger(context.Background(), command, opts, stdin, present)
+	return runLedgerWithViewAt(command, opts, format, stdin, stdout, stderr, present, nil)
+}
+
+func runLedgerWithViewAt(command string, opts ledgerOptions, format string, stdin io.Reader, stdout, stderr io.Writer, present ledgerViewLoader, now func() time.Time) int {
+	result, gaps, err := executeLedgerAt(context.Background(), command, opts, stdin, present, now)
 	envelope := Envelope{OK: err == nil, Data: nil, Gaps: gaps, Errors: []string{}}
 	if result != nil {
 		envelope.Data = result
@@ -189,6 +194,10 @@ func runLedgerWithView(command string, opts ledgerOptions, format string, stdin 
 }
 
 func executeLedger(ctx context.Context, command string, opts ledgerOptions, stdin io.Reader, present ledgerViewLoader) (*ledgerResult, []string, error) {
+	return executeLedgerAt(ctx, command, opts, stdin, present, nil)
+}
+
+func executeLedgerAt(ctx context.Context, command string, opts ledgerOptions, stdin io.Reader, present ledgerViewLoader, now func() time.Time) (*ledgerResult, []string, error) {
 	gaps := []string{}
 	var payload []byte
 	if command == "ledger add" {
@@ -222,7 +231,7 @@ func executeLedger(ctx context.Context, command string, opts ledgerOptions, stdi
 		return nil, gaps, err
 	}
 	defer db.Close()
-	service := ledger.New(db, nil)
+	service := ledger.New(db, now)
 	result := &ledgerResult{}
 	switch command {
 	case "run start":

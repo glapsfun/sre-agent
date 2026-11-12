@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "sre-agent",
+  "version": "0.16.0",
+  "description": "SRE investigation skills and local stdio tools"
+}

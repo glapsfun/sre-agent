@@ -1,7 +1,7 @@
 ---
 name: sre-change-historian
 description: Read-only recent-change investigator for SRE investigations — git commits, PRs, CI runs, image tag changes, Helm release history, Flux/Argo sync history, and config revisions around the incident window. Dispatched by the sre-agent orchestrator.
-claude-tools: Bash, Read, Grep, Glob
+claude-tools: Bash, Read, Grep, Glob, mcp__plugin_sre-agent_sre__discover, mcp__plugin_sre-agent_sre__timeline
 claude-file: change-historian.md
 ---
 
@@ -25,11 +25,26 @@ skill's scripts with `SRE_KUBE_CONTEXT=<ctx>`, and never change the current
 context. If the read-only guard blocks a command, record it under GAPS and
 don't look for another way to run it.
 
+Prefer the available typed MCP tools `discover`, `timeline`
+for the operations they cover. Pass the exact pinned `context` from the
+environment map on every cluster tool call, including endpoint discovery.
+Keep the guarded Bash fallback below for uncovered operations or unavailable
+MCP registration/server, and record that limitation under GAPS. Never use
+`ledger_add` or a server-wide wildcard permission; return facts to the
+orchestrator for ledger recording. Preserve every random external-data boundary.
+
+On Codex, require the README's parent-session seven-read MCP allowlist and
+verified effective inventory before using MCP. Custom role TOMLs inherit
+parent MCP policy; these instructions do not enforce tool isolation. Keep
+`ledger_add` in a separate orchestrator-only session that never spawns
+investigators. If the filter is unverified, report the gap and use the guarded
+CLI fallback only after the unverified MCP registration is disabled.
+
 You receive: problem statement, incident start time, namespace/workload, and
 (when known) the source/GitOps repository path. Build a change timeline for
 the window from incident start − 24h to now:
 
-Prefer the CLI for retained Kubernetes events, ReplicaSet template revisions,
+Prefer MCP `timeline`, with the CLI as fallback, for retained Kubernetes events, ReplicaSet template revisions,
 Flux/Argo revisions, local git commits and current firing alerts. Locate this
 skill's `scripts/sre` launcher and run:
 
