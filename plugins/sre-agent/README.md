@@ -45,8 +45,8 @@ The source-built `sre mcp` command serves stdio only. It exposes exactly
 `discover`, `logs_fold`, `prom_query`, `timeline`, `recall`, `run_resume`,
 `ledger_add`, and `report`. It has no HTTP listener, resources, or authentication
 layer. stdout carries only MCP messages; diagnostics go to stderr.
-The launcher still pins `v0.17.0`, whose publication is tracked separately in
-issue #5. Local source-build tests do not establish that a release is available.
+The launcher pins `v0.17.0`. If that release or its `mcp` command is unavailable,
+use a verified source build or the CLI and script fallbacks below.
 
 Prefer available typed read tools for covered operations. Supply the exact
 nonempty pinned cluster `context` to `discover`, `logs_fold`, `prom_query`, and
@@ -178,7 +178,8 @@ Use `--format text` for a readable text view. Source builds provide `version`,
 `discover`, `logs fold`, `prom query`, `timeline`, `run`, `ledger`,
 `incident add`, and `recall`; the
 existing investigation scripts remain available.
-The pinned release may not yet include the source build's newer commands.
+If the installed binary lacks a command, use a source build or the existing
+scripts for that operation.
 
 `sre logs fold` reads stdin and returns redacted patterns, counts, first/last
 timestamps, levels, and samples. For example:
@@ -241,7 +242,7 @@ downloads and cached binaries; they trust the release manifest and local cache.
 
 A valid cached release works offline. With no cache, a failed download exits
 nonzero and points to the existing scripts, such as `sre-env-discovery.sh` and
-`sre-evidence.sh`. This also applies until `v0.17.0` is published. A checksum
+`sre-evidence.sh`, including when the pinned release is unavailable. A checksum
 mismatch refuses execution; remove the affected version cache and retry online.
 A concurrent download exits with a retry message. After an interrupted download,
 remove its stale `.lock` directory only after confirming no launcher is running.
