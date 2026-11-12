@@ -1,0 +1,52 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "namespace": "ns",
+        "name": "api",
+        "uid": "a",
+        "ownerReferences": []
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "ReplicaSet",
+      "metadata": {
+        "namespace": "ns",
+        "name": "api-rs",
+        "uid": "rs",
+        "ownerReferences": [
+          {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": "api",
+            "uid": "a",
+            "controller": true
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "namespace": "ns",
+        "name": "api-pod",
+        "uid": "pod",
+        "ownerReferences": [
+          {
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "name": "api-rs",
+            "uid": "rs",
+            "controller": true
+          }
+        ]
+      }
+    }
+  ]
+}

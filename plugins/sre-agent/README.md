@@ -46,7 +46,8 @@ launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
 on amd64 or arm64. It requires Bash, curl, and either sha256sum or shasum.
 The binary prints one JSON object with `ok`, `data`, `gaps`, and `errors`.
 Use `--format text` for a readable text view. Source builds provide `version`,
-`discover`, and `logs fold`; the existing investigation scripts remain available.
+`discover`, `logs fold`, `prom query`, and `timeline`; the existing investigation
+scripts remain available.
 The pinned release may not yet include the source build's newer commands.
 
 `sre logs fold` reads stdin and returns redacted patterns, counts, first/last
@@ -66,6 +67,40 @@ enables timestamps, and uses a 30-second deadline. It selects explicit context,
 then `SRE_KUBE_CONTEXT`, then the current context without changing it.
 See [log folding details](skills/sre-agent/references/logs-investigation.md#fold-repeated-lines)
 for masking, timestamp handling, and limits.
+
+`sre timeline` returns every matching retained Kubernetes event, ReplicaSet
+revision, Flux/Argo revision, local git commit and currently firing Alertmanager
+alert in one sorted list. Namespace is required; workload accepts an exact name
+or `KIND/NAME`. For example:
+
+```bash
+sre timeline --context prod --namespace payments --workload deployment/checkout \
+  --since 2h --repo ./checkout --alertmanager-url http://localhost:9093 \
+  --timeout 30s --format json
+```
+
+The default window is the last two hours, captured once in UTC. Context follows
+`--context`, `SRE_KUBE_CONTEXT`, then one current-context lookup. Setup and all
+collectors share the timeout. Alertmanager uses `--alertmanager-url`, then
+`SRE_ALERTMANAGER_URL`; supply an already reachable HTTP(S) endpoint. The command
+does not start a port-forward or use discovery hints as endpoints. Missing repo
+or endpoint produces a gap. A failed source sets `ok=false` and exits 1 while
+retaining independent successes; absence and historical-coverage gaps alone
+exit 0. An unresolved requested workload never falls back to namespace scope.
+
+JSON keeps the complete typed list at `data.entries`, plus all seven source
+summaries, undated revision context and structured gaps. One fresh external-data
+boundary marks the report; text presents the same records and coverage. There
+is no entry limit or pagination. Events and ReplicaSets cover retained objects,
+not deleted history; aggregate event counts do not date each occurrence.
+ReplicaSet creation does not prove rollout or revision application time. Safe
+pod-template comparisons omit literal environment values, annotations, commands
+and other excluded fields while preserving references such as Secret names and
+keys. Git covers local HEAD ancestry by committer time, not deployment time.
+GitOps ownership must be verifiable; ambiguous remote associations and unknown
+timestamps remain gaps or undated context. Alertmanager covers current firing
+alerts, including suppressed alerts, not resolved alert history. Cloud audits,
+GitHub activity, Helm history and mesh evidence still use the existing helpers.
 
 The cache lives under `CLAUDE_PLUGIN_DATA/sre-agent` when set, otherwise
 `XDG_CACHE_HOME/sre-agent`, otherwise `HOME/.cache/sre-agent`. Each version and

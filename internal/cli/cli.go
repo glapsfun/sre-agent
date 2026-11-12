@@ -15,6 +15,7 @@ import (
 	"github.com/glapsfun/sre-agent/internal/logs"
 	"github.com/glapsfun/sre-agent/internal/prom"
 	"github.com/glapsfun/sre-agent/internal/safety"
+	"github.com/glapsfun/sre-agent/internal/timeline"
 )
 
 var Version = "dev"
@@ -48,7 +49,13 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 	format, command, opts, err := parse(args)
 	var data any
 	if err == nil {
-		if command == "discover" {
+		if command == "timeline" {
+			var report timeline.Report
+			report, err = timeline.Collect(context.Background(), opts.timeline, timeline.Dependencies{})
+			if err == nil {
+				return writeTimeline(format, report, stdout, stderr)
+			}
+		} else if command == "discover" {
 			data, err = discover.Discover(context.Background(), opts.discovery)
 		} else if command == "prom query" {
 			var report prom.Report
@@ -149,6 +156,7 @@ type commandOptions struct {
 	discovery discover.Options
 	logs      logs.PodOptions
 	prom      prom.Options
+	timeline  timeline.Options
 }
 
 func parse(args []string) (string, string, commandOptions, error) {
@@ -157,6 +165,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 	var positional []string
 	discoveryFlag, logFlag, podFlag, contextFlag := false, false, false, false
 	promFlag, timeoutFlag := false, false
+	timelineFlag, namespaceFlag, sinceFlag := false, false, false
 	invalid := func(message string) (string, string, commandOptions, error) {
 		return "json", "", opts, errors.New(message)
 	}
@@ -168,9 +177,9 @@ func parse(args []string) (string, string, commandOptions, error) {
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top":
+		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url":
 		default:
-			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>' [--format json|text]")
+			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline --namespace NS [--format json|text]")
 		}
 		if name == "--previous" && !hasValue {
 			value, hasValue = "true", true
@@ -192,6 +201,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 			contextFlag = true
 			opts.discovery.Context, opts.logs.Context = value, value
 			opts.prom.Context = value
+			opts.timeline.Context = value
 		case "--only":
 			discoveryFlag = true
 			opts.discovery.Only = strings.Split(value, ",")
@@ -203,6 +213,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 			}
 			opts.discovery.Timeout = timeout
 			opts.prom.Timeout = timeout
+			opts.timeline.Timeout = timeout
 		case "--url":
 			promFlag = true
 			if value == "" {
@@ -234,8 +245,25 @@ func parse(args []string) (string, string, commandOptions, error) {
 				return invalid("max-patterns must be a positive integer")
 			}
 			opts.logs.Options.MaxPatterns = maximum
+		case "--workload", "--repo", "--alertmanager-url":
+			timelineFlag = true
+			if strings.TrimSpace(value) == "" {
+				return invalid(name + " must not be empty")
+			}
+			switch name {
+			case "--workload":
+				opts.timeline.Workload = value
+			case "--repo":
+				opts.timeline.Repo = value
+			case "--alertmanager-url":
+				opts.timeline.AlertmanagerURL = value
+			}
 		case "--pod", "--namespace", "--container":
-			podFlag = true
+			if name == "--namespace" {
+				namespaceFlag = true
+			} else {
+				podFlag = true
+			}
 			if value == "" {
 				return invalid(name + " must not be empty")
 			}
@@ -244,6 +272,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 				opts.logs.Pod = value
 			case "--namespace":
 				opts.logs.Namespace = value
+				opts.timeline.Namespace = value
 			case "--container":
 				opts.logs.Container = value
 			}
@@ -255,12 +284,13 @@ func parse(args []string) (string, string, commandOptions, error) {
 			}
 			opts.logs.Previous = previous
 		case "--since":
-			podFlag = true
+			sinceFlag = true
 			since, err := time.ParseDuration(value)
 			if err != nil || since <= 0 {
 				return invalid("since must be a positive duration")
 			}
 			opts.logs.Since = since
+			opts.timeline.Since = since
 		}
 	}
 	if format != "json" && format != "text" {
@@ -271,7 +301,20 @@ func parse(args []string) (string, string, commandOptions, error) {
 		command = "prom query"
 		opts.prom.Query = positional[2]
 	}
+	if command != "timeline" {
+		if timelineFlag {
+			return invalid("timeline flags require timeline")
+		}
+		podFlag = podFlag || namespaceFlag || sinceFlag
+	}
 	switch command {
+	case "timeline":
+		if discoveryFlag || logFlag || podFlag || promFlag {
+			return invalid("command flags do not apply to timeline")
+		}
+		if err := timeline.Validate(opts.timeline); err != nil {
+			return format, "", opts, err
+		}
 	case "version":
 		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag {
 			return invalid("command flags require discover or logs fold")
@@ -300,7 +343,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 			return format, "", opts, err
 		}
 	default:
-		return format, "", opts, errors.New("usage: sre version|discover|logs fold|prom query '<PromQL>' [--format json|text]")
+		return format, "", opts, errors.New("usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline --namespace NS [--format json|text]")
 	}
 	return format, command, opts, nil
 }

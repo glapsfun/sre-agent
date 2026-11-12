@@ -1,0 +1,249 @@
+{
+  "kustomizations": [
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "metadata": {
+        "name": "team-config",
+        "namespace": "flux-system",
+        "uid": "k-api",
+        "generation": 7
+      },
+      "spec": {
+        "postBuild": {
+          "substitute": {
+            "PASSWORD": "DO_NOT_LEAK"
+          }
+        }
+      },
+      "status": {
+        "inventory": {
+          "entries": [
+            {
+              "id": "ns_api_apps_Deployment",
+              "v": "v1"
+            }
+          ]
+        },
+        "lastAppliedRevision": "main@sha1:good",
+        "lastAttemptedRevision": "main@sha1:attempt",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ReconciliationFailed",
+            "message": "password=fixture-hidden",
+            "observedGeneration": 7,
+            "lastTransitionTime": "2026-11-11T11:05:00Z"
+          }
+        ],
+        "history": [
+          {
+            "firstReconciled": "2026-11-11T09:00:00Z",
+            "lastReconciled": "2026-11-11T11:20:00Z",
+            "lastReconciledStatus": "ReconciliationSucceeded",
+            "totalReconciliations": 2,
+            "metadata": {
+              "revision": "main@sha1:good",
+              "private": "DO_NOT_LEAK"
+            }
+          },
+          {
+            "firstReconciled": "2026-11-11T10:10:00Z",
+            "lastReconciled": "2026-11-11T11:30:00Z",
+            "lastReconciledStatus": "HealthCheckFailed",
+            "totalReconciliations": 8,
+            "metadata": {
+              "revision": "main@sha1:attempt"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "metadata": {
+        "name": "gateway",
+        "namespace": "flux-system",
+        "uid": "k-gateway",
+        "generation": 7
+      },
+      "spec": {},
+      "status": {
+        "inventory": {
+          "entries": [
+            {
+              "id": "ns_api-gateway_apps_Deployment",
+              "v": "v1"
+            }
+          ]
+        },
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ReconciliationFailed",
+            "message": "password=fixture-hidden",
+            "observedGeneration": 7,
+            "lastTransitionTime": "2026-11-11T11:05:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "metadata": {
+        "name": "remote",
+        "namespace": "flux-system",
+        "uid": "k-remote",
+        "generation": 7
+      },
+      "spec": {
+        "kubeConfig": {
+          "secretRef": {
+            "name": "remote-auth"
+          }
+        }
+      },
+      "status": {
+        "inventory": {
+          "entries": [
+            {
+              "id": "ns_api_apps_Deployment",
+              "v": "v1"
+            }
+          ]
+        },
+        "lastAppliedRevision": "main@sha1:good",
+        "lastAttemptedRevision": "main@sha1:attempt",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ReconciliationFailed",
+            "message": "password=fixture-hidden",
+            "observedGeneration": 7,
+            "lastTransitionTime": "2026-11-11T11:05:00Z"
+          }
+        ],
+        "history": [
+          {
+            "firstReconciled": "2026-11-11T09:00:00Z",
+            "lastReconciled": "2026-11-11T11:20:00Z",
+            "lastReconciledStatus": "ReconciliationSucceeded",
+            "totalReconciliations": 2,
+            "metadata": {
+              "revision": "main@sha1:good",
+              "private": "DO_NOT_LEAK"
+            }
+          },
+          {
+            "firstReconciled": "2026-11-11T10:10:00Z",
+            "lastReconciled": "2026-11-11T11:30:00Z",
+            "lastReconciledStatus": "HealthCheckFailed",
+            "totalReconciliations": 8,
+            "metadata": {
+              "revision": "main@sha1:attempt"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "metadata": {
+        "name": "api",
+        "namespace": "ns",
+        "uid": "k-fallback",
+        "generation": 7
+      },
+      "spec": {},
+      "status": {
+        "lastAppliedRevision": "main@sha1:undated",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ReconciliationFailed",
+            "message": "password=fixture-hidden",
+            "observedGeneration": 7,
+            "lastTransitionTime": "2026-11-11T11:15:00Z"
+          }
+        ]
+      }
+    }
+  ],
+  "helmReleases": [
+    {
+      "apiVersion": "helm.toolkit.fluxcd.io/v2",
+      "kind": "HelmRelease",
+      "metadata": {
+        "name": "chart-api",
+        "namespace": "flux-system",
+        "uid": "h-api",
+        "generation": 7
+      },
+      "spec": {
+        "values": {
+          "password": "DO_NOT_LEAK"
+        }
+      },
+      "status": {
+        "inventory": {
+          "entries": [
+            {
+              "id": "ns_api_apps_Deployment",
+              "v": "v1"
+            }
+          ]
+        },
+        "lastAttemptedRevision": "1.3.0",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ReconciliationFailed",
+            "message": "password=fixture-hidden",
+            "observedGeneration": 7,
+            "lastTransitionTime": "2026-11-11T11:51:00Z"
+          }
+        ],
+        "history": [
+          {
+            "name": "api",
+            "namespace": "ns",
+            "version": 2,
+            "chartName": "api-chart",
+            "chartVersion": "1.2.0",
+            "appVersion": "2.0",
+            "status": "deployed",
+            "firstDeployed": "2026-11-11T09:00:00Z",
+            "lastDeployed": "2026-11-11T11:40:00Z",
+            "configDigest": "DO_NOT_LEAK"
+          },
+          {
+            "name": "api",
+            "namespace": "ns",
+            "version": 1,
+            "chartName": "api-chart",
+            "chartVersion": "1.1.0",
+            "status": "superseded",
+            "lastDeployed": "2026-11-11T09:00:00Z"
+          },
+          {
+            "name": "api",
+            "namespace": "ns",
+            "version": 3,
+            "chartName": "api-chart",
+            "chartVersion": "1.3.0",
+            "status": "failed",
+            "lastDeployed": "2026-11-11T11:50:00Z"
+          }
+        ]
+      }
+    }
+  ]
+}
