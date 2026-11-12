@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -233,6 +234,10 @@ var ledgerTimeFormat = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:
 
 func validID(id string) bool { return ledgerID.MatchString(id) }
 
+func validSessionID(id string) bool {
+	return id != "" && len(id) <= 256 && utf8.ValidString(id) && strings.IndexFunc(id, unicode.IsControl) < 0
+}
+
 func DecodePayload(kind Kind, raw json.RawMessage) (any, error) {
 	if len(raw) > MaxPayloadBytes {
 		return nil, errors.New("ledger payload exceeds 64 KiB")
@@ -403,7 +408,9 @@ func validatePayload(payload any) error {
 			return errors.New("phase must be between 0 and 6")
 		}
 		if value.SessionID != nil {
-			references = append(references, *value.SessionID)
+			if !validSessionID(*value.SessionID) {
+				return errors.New("invalid session identifier")
+			}
 		}
 		for _, wave := range []*Wave{value.Wave1, value.Wave2} {
 			if wave != nil && wave.MutationCheck != "" && !oneOf(wave.MutationCheck, "not_run", "verified", "inconclusive", "violation") {
@@ -480,6 +487,9 @@ func validatePayload(payload any) error {
 				return errors.New("ledger time must not be zero")
 			}
 			*at = at.UTC()
+			if at.Year() < 0 || at.Year() > 9999 {
+				return errors.New("ledger UTC time is outside the supported year range")
+			}
 		}
 	}
 	return nil

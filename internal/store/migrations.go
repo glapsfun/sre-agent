@@ -16,7 +16,38 @@ type Migration struct {
 
 // Append immutable, contiguous migrations here as features add their tables.
 // Version 1 establishes schema metadata without creating feature-owned tables.
-var migrations = []Migration{{Version: 1}}
+var migrations = []Migration{{Version: 1}, {Version: 2, SQL: `
+CREATE TABLE runs (
+    creation_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    problem TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    next_seq INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE ledger_entries (
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    seq INTEGER NOT NULL,
+    id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('metadata','evidence','hypothesis','expected-behavior','option','approval','action','validation','safety-violation')),
+    recorded_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    PRIMARY KEY(run_id, seq),
+    UNIQUE(run_id, id)
+);
+CREATE TABLE ledger_refs (
+    run_id TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    PRIMARY KEY(run_id, entry_id, target_id, relation),
+    FOREIGN KEY(run_id, entry_id) REFERENCES ledger_entries(run_id, id),
+    FOREIGN KEY(run_id, target_id) REFERENCES ledger_entries(run_id, id)
+);
+CREATE TABLE run_sessions (
+    session_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id)
+);
+`}}
 
 // ApplyMigrations applies all pending versions atomically. SQL is trusted,
 // compiled-in schema SQL and must not contain transaction control statements.

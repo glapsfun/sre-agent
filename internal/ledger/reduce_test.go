@@ -180,7 +180,7 @@ func TestStrictPayloadDecoding(t *testing.T) {
 		{"empty patch", "metadata", `{}`},
 		{"null patch", "metadata", `{"impact":null}`},
 		{"phase range", "metadata", `{"phase":7}`},
-		{"bad session id", "metadata", `{"session_id":"../session"}`},
+		{"bad session id", "metadata", `{"session_id":"session\ncontrol"}`},
 		{"zero optional time", "metadata", `{"started_at":"0001-01-01T00:00:00Z"}`},
 		{"duplicate criteria", "expected-behavior", `{"criteria":[{"id":"same","description":"one","observation":"query","threshold":"","source":""},{"id":"same","description":"two","observation":"query","threshold":"","source":""}]}`},
 		{"empty criteria", "expected-behavior", `{"criteria":[]}`},
@@ -365,5 +365,30 @@ func TestStrictPayloadByteBoundAndEncoding(t *testing.T) {
 	invalid[9] = 0xff
 	if _, err := DecodePayload("evidence", invalid); err == nil {
 		t.Fatal("invalid UTF-8 accepted with replacement")
+	}
+}
+
+func TestPayloadUTCTimesRemainJSONEncodable(t *testing.T) {
+	for _, stamp := range []string{"0000-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"} {
+		raw, _ := json.Marshal(map[string]string{"fact": "fact", "source": "query", "observed_at": stamp})
+		if _, err := DecodePayload(KindEvidence, raw); err == nil {
+			t.Errorf("accepted unrepresentable UTC time %s", stamp)
+		}
+	}
+}
+
+func TestOpaqueSessionIdentity(t *testing.T) {
+	for _, id := range []string{"../session", "harness:session/one", strings.Repeat("x", 256)} {
+		raw, _ := json.Marshal(map[string]string{"session_id": id})
+		payload, err := DecodePayload(KindMetadata, raw)
+		if err != nil || *payload.(MetadataUpdate).SessionID != id {
+			t.Errorf("opaque identity rejected or changed: %v", err)
+		}
+	}
+	for _, id := range []string{"", "with\ncontrol", "with\x7fcontrol", strings.Repeat("x", 257)} {
+		raw, _ := json.Marshal(map[string]string{"session_id": id})
+		if _, err := DecodePayload(KindMetadata, raw); err == nil {
+			t.Errorf("accepted invalid session identity")
+		}
 	}
 }

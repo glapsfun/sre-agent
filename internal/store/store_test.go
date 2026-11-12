@@ -244,8 +244,8 @@ func TestOpenRecreatesDeletedDatabaseEmpty(t *testing.T) {
 	if got := queryInt(t, s.DB(), "SELECT count(*) FROM sqlite_master WHERE name = 'sample'"); got != 0 {
 		t.Fatalf("old table survived recreation: %d", got)
 	}
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 1 {
-		t.Fatalf("new schema version = %d, want 1", got)
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 2 {
+		t.Fatalf("new schema version = %d, want 2", got)
 	}
 }
 
@@ -260,7 +260,7 @@ func TestOpenUpgradesOlderDatabaseAndRetainsData(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openStore(t, root)
-	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 1 {
+	if got := queryInt(t, s.DB(), "PRAGMA user_version"); got != 2 {
 		t.Fatalf("upgraded version = %d", got)
 	}
 	if got := queryInt(t, s.DB(), "SELECT value FROM sample"); got != 42 {
@@ -345,6 +345,10 @@ func TestMigrationsRejectInvalidSequencesBeforeWriting(t *testing.T) {
 }
 
 func TestMigrationDeadlineRollsBackAndReleasesConnection(t *testing.T) {
+	// This fixture deliberately tests the original version 1 to 2 failure.
+	previous := migrations
+	migrations = []Migration{{Version: 1}}
+	t.Cleanup(func() { migrations = previous })
 	s := openStore(t, t.TempDir())
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
@@ -579,6 +583,10 @@ func TestConcurrentProcessesOpenFreshDatabaseAndWrite(t *testing.T) {
 }
 
 func TestKilledMigrationRollsBack(t *testing.T) {
+	// Keep the custom failing migration independent of feature migrations.
+	previous := migrations
+	migrations = []Migration{{Version: 1}}
+	t.Cleanup(func() { migrations = previous })
 	root := t.TempDir()
 	s := openStore(t, root)
 	if err := s.Close(); err != nil {
@@ -628,6 +636,7 @@ func TestStoreWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	migrations = []Migration{{Version: 1}}
 	s := openStore(t, root)
 	if err := ApplyMigrations(t.Context(), s.DB(), []Migration{{1, ""}, {2, "CREATE TABLE partial (value INTEGER); SELECT wait_for_kill()"}}); err != nil {
 		t.Fatal(err)
