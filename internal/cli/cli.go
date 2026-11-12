@@ -13,6 +13,7 @@ import (
 
 	"github.com/glapsfun/sre-agent/internal/discover"
 	"github.com/glapsfun/sre-agent/internal/logs"
+	"github.com/glapsfun/sre-agent/internal/mcpserver"
 	"github.com/glapsfun/sre-agent/internal/processlog"
 	"github.com/glapsfun/sre-agent/internal/prom"
 	"github.com/glapsfun/sre-agent/internal/safety"
@@ -47,6 +48,20 @@ func run(args []string, stdout, stderr io.Writer, dispatch func(string) (any, er
 }
 
 func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, dispatch func(string) (any, error)) int {
+	return runWithInputAt(args, stdin, stdout, stderr, dispatch, nil)
+}
+
+func runWithInputAt(args []string, stdin io.Reader, stdout, stderr io.Writer, dispatch func(string) (any, error), now func() time.Time) int {
+	if len(args) > 0 && args[0] == "mcp" {
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "usage: sre mcp")
+			return 1
+		}
+		if mcpserver.Run(context.Background(), stdin, stdout, stderr) != nil {
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 2 && args[0] == "hook" && args[1] == "pre" {
 		return runHookPre(stdin, stderr)
 	}
@@ -63,10 +78,10 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 		} else if command == "report" {
 			return runReport(opts.report, format, stdout, stderr)
 		} else if isLedgerCommand(command) {
-			return runLedger(command, opts.ledger, format, stdin, stdout, stderr)
+			return runLedgerWithViewAt(command, opts.ledger, format, stdin, stdout, stderr, loadLedgerView, now)
 		} else if command == "timeline" {
 			var report timeline.Report
-			report, err = timeline.Collect(context.Background(), opts.timeline, timeline.Dependencies{})
+			report, err = timeline.Collect(context.Background(), opts.timeline, timeline.Dependencies{Now: now})
 			if err == nil {
 				return writeTimeline(format, report, stdout, stderr)
 			}
@@ -74,7 +89,7 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 			data, err = discover.Discover(context.Background(), opts.discovery)
 		} else if command == "prom query" {
 			var report prom.Report
-			report, err = prom.Query(context.Background(), opts.prom)
+			report, err = (prom.Service{Now: now}).Query(context.Background(), opts.prom)
 			if err == nil {
 				data, err = prom.Present(report)
 			}
