@@ -308,6 +308,12 @@ func appendPrepared(ctx context.Context, conn *sql.Conn, prepared preparedEntry)
 				return Entry{}, err
 			}
 		}
+		if err := checkStoredValidation(ctx, conn, existing, existingPayload); err != nil {
+			if errors.Is(err, ErrInvalidReference) || errors.Is(err, ErrInvalidValidation) {
+				return Entry{}, ErrCorrupt
+			}
+			return Entry{}, err
+		}
 		return existing, errReplay
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -324,12 +330,38 @@ func appendPrepared(ctx context.Context, conn *sql.Conn, prepared preparedEntry)
 			return Entry{}, err
 		}
 	}
+	if err := checkStoredValidation(ctx, conn, entry, prepared.payload); err != nil {
+		return Entry{}, err
+	}
 	if metadata, ok := prepared.payload.(MetadataUpdate); ok && metadata.SessionID != nil {
 		if _, err := conn.ExecContext(ctx, "INSERT INTO run_sessions(session_id,run_id) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET run_id=excluded.run_id", *metadata.SessionID, entry.RunID); err != nil {
 			return Entry{}, err
 		}
 	}
 	return entry, nil
+}
+
+func checkStoredValidation(ctx context.Context, q Querier, entry Entry, payload any) error {
+	v, ok := payload.(Validation)
+	if !ok {
+		return nil
+	}
+	load := func(id string) (Entry, error) {
+		target, _, err := readEntry(q.QueryRowContext(ctx, "SELECT id,run_id,seq,kind,recorded_at,payload_json FROM ledger_entries WHERE run_id=? AND id=?", entry.RunID, id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return Entry{}, ErrInvalidReference
+		}
+		return target, err
+	}
+	expected, err := load(v.ExpectedEntryID)
+	if err != nil {
+		return err
+	}
+	action, err := load(v.ActionID)
+	if err != nil {
+		return err
+	}
+	return checkValidationResult(entry, v, expected, action)
 }
 
 func checkReference(ctx context.Context, q Querier, entry Entry, ref ledgerReference) error {
@@ -528,7 +560,7 @@ func LoadRun(ctx context.Context, q Querier, runID string) (Run, error) {
 	}
 	defer rows.Close()
 	entries := []Entry{}
-	prior := map[string]Kind{}
+	prior := map[string]Entry{}
 	for rows.Next() {
 		entry, payload, err := readEntry(rows)
 		if err != nil {
@@ -538,11 +570,16 @@ func LoadRun(ctx context.Context, q Querier, runID string) (Run, error) {
 			return Run{}, ErrCorrupt
 		}
 		for _, ref := range payloadReferences(payload) {
-			if prior[ref.target] != ref.kind {
+			if prior[ref.target].Kind != ref.kind {
 				return Run{}, ErrCorrupt
 			}
 		}
-		prior[entry.ID] = entry.Kind
+		if v, ok := payload.(Validation); ok {
+			if err := checkValidationResult(entry, v, prior[v.ExpectedEntryID], prior[v.ActionID]); err != nil {
+				return Run{}, ErrCorrupt
+			}
+		}
+		prior[entry.ID] = entry
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
@@ -597,7 +634,7 @@ func ledgerError(ctx context.Context, operation string, err error) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("ledger %s: %w", operation, ctx.Err())
 	}
-	for _, known := range []error{context.Canceled, context.DeadlineExceeded, ErrNotFound, ErrConflict, ErrInvalidReference, ErrCorrupt} {
+	for _, known := range []error{context.Canceled, context.DeadlineExceeded, ErrNotFound, ErrConflict, ErrInvalidReference, ErrInvalidValidation, ErrCorrupt} {
 		if errors.Is(err, known) {
 			return fmt.Errorf("ledger %s: %w", operation, known)
 		}

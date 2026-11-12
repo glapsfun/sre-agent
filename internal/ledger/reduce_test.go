@@ -22,7 +22,7 @@ func ledgerFixtures() []Entry {
 		{"o1", "option", `{"summary":"roll back image","steps":["revert image"],"risk":"old behavior returns","pros":["known image"],"cons":["feature unavailable"],"expected_impact":"restore checkout","rollback":"restore current image","hypothesis_ids":["h1"]}`},
 		{"p1", "approval", `{"option_id":"o1","decision":"approved","statement":"apply option one","at":"2026-11-12T00:10:00Z","target":"prod"}`},
 		{"a1", "action", `{"at":"2026-11-12T00:11:00Z","command":"revert image","result":"rollout complete","effect":"remediation","status":"applied","option_id":"o1","approval_id":"p1","evidence_ids":["e1"],"rollback":"restore current image"}`},
-		{"v1", "validation", `{"expected_entry_id":"x1","criterion_id":"errors","action_id":"a1","verdict":"pass","observed":"0.1%","source":"rate(errors)","evidence_ids":["e1"],"at":"2026-11-12T00:30:00Z","window_start":"2026-11-12T00:12:00Z","window_end":"2026-11-12T00:27:00Z","reason":"stable throughout"}`},
+		{"v1", "validation", `{"expected_entry_id":"x1","criterion_id":"errors","action_id":"a1","verdict":"pass","observed":"0.1%","source":"rate(errors)","evidence_ids":["e1"],"at":"2026-11-12T01:00:00.000000123Z","window_start":"2026-11-12T00:12:00Z","window_end":"2026-11-12T00:27:00Z","reason":"stable throughout"}`},
 		{"s1", "safety-violation", `{"wave":1,"investigators":["logs"],"changes":[{"object":"Deployment/checkout","field":"spec.replicas","before_hash":"before","after_hash":"after","change":"changed"},{"object":"HEAD","field":"","before_hash":"old-revision","after_hash":"new-revision","change":"head"}]}`},
 		{"s2", "safety-violation", `{"wave":1,"investigators":[],"changes":[],"acknowledges":"s1","acknowledgment":"reviewed unexpected change"}`},
 	}
