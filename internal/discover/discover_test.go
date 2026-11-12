@@ -382,17 +382,19 @@ func TestOverallDeadlineIncludesScalarRedaction(t *testing.T) {
 	cleanEnv(t)
 	fixtures := clusterFixtures()
 	fixtures["k6 version"] = jsonResult(strings.Repeat("x", 4*1024*1024))
+	f := &fixtureRunner{fixtures: fixtures}
 	start := time.Now()
-	report, err := fixtureService(&fixtureRunner{fixtures: fixtures}).Discover(context.Background(), Options{Only: []string{"obs"}, Context: "original", Timeout: 50 * time.Millisecond})
+	report, err := fixtureService(f).Discover(context.Background(), Options{Only: []string{"obs"}, Context: "original", Timeout: 50 * time.Millisecond})
 	elapsed := time.Since(start)
 	t.Logf("4MiB scalar response, 50ms deadline: %s", elapsed)
 	if err != nil {
 		t.Fatal(err)
 	}
+	p := report.Probes["obs"]
+	t.Logf("status=%s endpoints=%d scalar_bytes=%d gaps=%v calls=%v", p.Status, len(p.Findings.Obs.Endpoints), len(p.Findings.Obs.K6Version), p.Gaps, f.calls)
 	if elapsed > 300*time.Millisecond {
 		t.Fatal("scalar postprocessing exceeded overall deadline")
 	}
-	p := report.Probes["obs"]
 	if p.Status != Timeout || len(p.Findings.Obs.Endpoints) != 2 || p.Findings.Obs.K6Version != "" {
 		t.Fatal("lost prior endpoints or returned unfinished scalar")
 	}
