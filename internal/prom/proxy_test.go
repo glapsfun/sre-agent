@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/glapsfun/sre-agent/internal/discover"
+	"github.com/glapsfun/sre-agent/internal/executil"
 	"github.com/glapsfun/sre-agent/internal/safety"
 )
 
@@ -93,7 +95,10 @@ func selectedService() Service {
 }
 
 func TestActualKubectlPreservesPrometheusHTTPError(t *testing.T) {
+	var requests, responses atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		defer responses.Add(1)
 		if r.URL.Path != "/api/v1/namespaces/monitoring/services/prometheus-main:9090/proxy/api/v1/query_range" || r.URL.Query().Get("query") != "broken" {
 			t.Errorf("unexpected request: %s", r.URL)
 		}
@@ -103,8 +108,11 @@ func TestActualKubectlPreservesPrometheusHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 	dir := installActualKubectl(t, server.URL)
+	started := time.Now()
 	_, err := selectedService().Query(context.Background(), Options{Query: "broken", Context: "pinned", Timeout: 5 * time.Second})
+	t.Logf("query elapsed=%s upstream_requests=%d handlers_completed=%d", time.Since(started), requests.Load(), responses.Load())
 	if err == nil || !strings.Contains(err.Error(), "parse error unexpected identifier") || strings.Contains(err.Error(), "hidden") || !strings.Contains(err.Error(), "BEGIN EXTERNAL DATA") {
+		logActualKubectlDiagnostics(t, dir)
 		t.Fatalf("error body lost or unsafe: %v", err)
 	}
 	assertProxyStopped(t, dir)
@@ -128,7 +136,7 @@ printf '%s' "$$" > "$PROM_FIXTURE/proxy.pid"
 for arg in "$@"; do
   case "$arg" in --unix-socket=*) printf '%s' "${arg#--unix-socket=}" > "$PROM_FIXTURE/proxy.socket";; esac
 done
-exec "$PROM_REAL_KUBECTL" "$@"
+exec "$PROM_REAL_KUBECTL" "$@" > "$PROM_FIXTURE/proxy.stdout" 2> "$PROM_FIXTURE/proxy.stderr"
 `
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -139,6 +147,42 @@ exec "$PROM_REAL_KUBECTL" "$@"
 	t.Setenv("KUBECONFIG", config)
 	t.Setenv("SRE_SKIP_CLUSTER", "")
 	return dir
+}
+
+func logActualKubectlDiagnostics(t *testing.T, dir string) {
+	t.Helper()
+	_, launchErr := os.Stat(filepath.Join(dir, "proxy.pid"))
+	socket, socketErr := os.ReadFile(filepath.Join(dir, "proxy.socket"))
+	var socketPresent, directoryPresent bool
+	if socketErr == nil {
+		_, err := os.Stat(string(socket))
+		socketPresent = err == nil
+		_, err = os.Stat(filepath.Dir(string(socket)))
+		directoryPresent = err == nil
+	}
+	t.Logf("wrapper_started=%t socket_recorded=%t socket_present_after_query=%t proxy_directory_present_after_query=%t", launchErr == nil, socketErr == nil, socketPresent, directoryPresent)
+	// Direct file redirection preserves exec and process-group cleanup. Only
+	// fixture-owned logs are read, with capped and redacted diagnostic output.
+	for _, name := range []string{"proxy.stdout", "proxy.stderr"} {
+		file, err := os.Open(filepath.Join(dir, name))
+		if err != nil {
+			t.Logf("%s unavailable: %v", name, err)
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(file, 4097))
+		file.Close()
+		truncated := len(body) > 4096
+		if truncated {
+			body = body[:4096]
+		}
+		t.Logf("%s truncated=%t read_error=%v: %q", name, truncated, readErr, safety.NewRedactor().Redact(string(body)))
+	}
+	// Query first so version inspection cannot warm up a slow proxy launch.
+	version := (executil.Runner{Timeout: time.Second}).Run(context.Background(), os.Getenv("PROM_REAL_KUBECTL"), "version", "--client", "-o", "json")
+	if len(version.Stdout) > 4096 {
+		version.Stdout = version.Stdout[:4096]
+	}
+	t.Logf("kubectl client version: %q error=%v", version.Stdout, version.Err)
 }
 
 func proxySocket(t *testing.T, dir string) string {
