@@ -20,3 +20,5 @@ abf1e7be821a0fce37ab8b606a2a65a6f1d59521:internal/logs/fold_test.go:private-key:
 08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/processlog/log_test.go:curl-auth-user:395
 # Synthetic multiline context fixture ending in literal user:plain credentials.
 08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/processlog/log_test.go:curl-auth-user:396
+# Synthetic report redaction fixture with literal body "plantedPrivateKeyValue", not key material.
+9dc15a01f48ae26b7d7167221bd33d1f04fbd648:internal/report/render_test.go:private-key:39
