@@ -372,14 +372,16 @@ runbooks/docs first, then the pinned official docs listed in
 `references/grafana-discovery.md` as the evidence demands.
 
 **Recall past incidents.** After ranking on this run's own evidence, consult
-incident memory per `references/incident-memory.md`: if `docs/sre-incidents/INDEX.md`
-exists, scan it and filter by the current signature (service + symptom class,
-then error/metric fingerprint), open matching incident files, and confirm the
-match against collected evidence. A confirmed match raises the matching
-hypothesis's confidence (ledger: `supported by [incident <slug>]`) and adds its
-validated fix as a **candidate** remediation for Phase 5 — re-validated through
-the approval gate and Phase 6 dry-run, never auto-applied. No store, or no
-match → note it and proceed.
+incident memory per `references/incident-memory.md`. After collecting current
+evidence, run `sre recall --service <service> --symptom <class> --fingerprint
+"<signature>" --repo <repository>` (optional `--top`, default 5). Map descriptive
+symptoms to the canonical classes before calling. Scores and reasons rank
+historical candidates; they do not establish the same root cause. Confirm each
+match against current evidence and cite its run ID in the ledger. Its fix enters
+Phase 5 as a candidate with the normal approval, dry-run and validation cycle;
+never auto-apply stored commands. Empty history is explicit; command failures
+are gaps, not proof that history is empty. Legacy `docs/sre-incidents/INDEX.md`
+and incident files remain a separate manual source, never implicitly imported.
 
 **Search GitHub for prior occurrences.** When `gh` is available and the
 ledger has GitHub `owner/repo` identifiers, run
@@ -458,16 +460,20 @@ start, create it from `references/project-memo.template.md`. Writing the memo is
 a local-documentation update, not a target mutation — it stores metadata and
 pointers only, never secret values.
 
-**Capture the incident (validated resolutions only).** If — and only if — a
-remediation was applied and every expected-behavior criterion passed, record the
-incident per `references/incident-memory.md`: write
-`docs/sre-incidents/<YYYY-MM-DD>-<slug>.md` from `references/incident.template.md`
-(symptom, confirmed root cause, decisive evidence with sources, validated fix +
-rollback, validation results, ruled-out hypotheses, links), prepend a row to
-`docs/sre-incidents/INDEX.md`, and commit locally scoped to the incident paths
-with an inline message (never a bare `git commit`; no push; no co-author line).
+**Capture the incident (validated resolutions only).** Only after a remediation
+was applied and every current expected-behavior criterion passed, run
+`sre incident add --run <run-id> --service <service> --symptom <class>
+--fingerprint "<signature>" --repo <repository>` in the main conversation.
+The explicit run is mandatory; capture does not infer it from the latest run or
+`SRE_RUN_ID`. The CLI validates and projects the committed ledger snapshot into
+local incident memory, preserving source-cited evidence, fix, rollback, criteria
+and validation results. Retry an uncertain capture with the same run and
+signature; an unchanged snapshot keeps one record and its original capture time.
 Applied-but-unverified, abandoned, or investigate-only runs capture nothing.
-Metadata and pointers only — never secret values.
+Follow `references/incident-memory.md` for receipt recovery and the separate
+manual Markdown workflow. Capture neither imports Markdown nor stages, commits
+or pushes files. Store metadata and pointers only, never secrets or raw dumps.
+Local capture grants no investigator write permission or target mutation rights.
 
 ## Degraded environments (the normal case)
 

@@ -58,6 +58,8 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 	if err == nil {
 		if command == "log" {
 			data, err = executeProcessLog(context.Background(), opts.processlog)
+		} else if command == "incident add" || command == "recall" {
+			return runIncident(command, opts.incident, format, stdout, stderr)
 		} else if isLedgerCommand(command) {
 			return runLedger(command, opts.ledger, format, stdin, stdout, stderr)
 		} else if command == "timeline" {
@@ -172,6 +174,7 @@ type commandOptions struct {
 	timeline   timeline.Options
 	ledger     ledgerOptions
 	processlog processLogOptions
+	incident   incidentOptions
 }
 
 func parse(args []string) (string, string, commandOptions, error) {
@@ -180,6 +183,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 	var positional []string
 	discoveryFlag, logFlag, podFlag, contextFlag := false, false, false, false
 	promFlag, timeoutFlag := false, false
+	topFlag, incidentFlag := false, false
 	timelineFlag, namespaceFlag, sinceFlag := false, false, false
 	repoFlag := false
 	processLogFlag := false
@@ -195,9 +199,9 @@ func parse(args []string) (string, string, commandOptions, error) {
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset", "--slowest", "--blocked", "--by-investigator":
+		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset", "--slowest", "--blocked", "--by-investigator", "--service", "--symptom", "--fingerprint":
 		default:
-			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline --namespace NS [--format json|text]")
+			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline|run|ledger|incident add|recall [--format json|text]")
 		}
 		if (name == "--previous" || name == "--blocked" || name == "--by-investigator") && !hasValue {
 			value, hasValue = "true", true
@@ -212,6 +216,16 @@ func parse(args []string) (string, string, commandOptions, error) {
 		switch name {
 		case "--format":
 			format = value
+		case "--service", "--symptom", "--fingerprint":
+			incidentFlag = true
+			switch name {
+			case "--service":
+				opts.incident.service = value
+			case "--symptom":
+				opts.incident.symptom = value
+			case "--fingerprint":
+				opts.incident.fingerprint = value
+			}
 		case "--slowest", "--blocked", "--by-investigator":
 			processLogFlag = true
 			if name == "--slowest" {
@@ -233,6 +247,9 @@ func parse(args []string) (string, string, commandOptions, error) {
 			}
 		case "--id", "--session-id", "--run", "--file", "--offset":
 			ledgerFlags[name] = true
+			if name == "--run" {
+				opts.incident.runID = value
+			}
 			if err := opts.ledger.set(name, value); err != nil {
 				return invalid(err.Error())
 			}
@@ -274,12 +291,13 @@ func parse(args []string) (string, string, commandOptions, error) {
 				opts.prom.Step = duration
 			}
 		case "--top":
-			promFlag = true
+			topFlag = true
 			top, err := strconv.Atoi(value)
 			if err != nil || top <= 0 {
 				return invalid("top must be a positive integer")
 			}
 			opts.prom.Top = top
+			opts.incident.top = top
 		case "--max-patterns":
 			logFlag = true
 			maximum, err := strconv.Atoi(value)
@@ -303,6 +321,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 				opts.timeline.Repo = value
 				opts.ledger.repo = value
 				opts.processlog.repo = value
+				opts.incident.repo = value
 			case "--alertmanager-url":
 				opts.timeline.AlertmanagerURL = value
 			}
@@ -349,6 +368,29 @@ func parse(args []string) (string, string, commandOptions, error) {
 		command = "prom query"
 		opts.prom.Query = positional[2]
 	}
+	if command == "incident add" || command == "recall" {
+		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag || timelineFlag || namespaceFlag || sinceFlag || processLogFlag {
+			return invalid("command flags do not apply to incident commands")
+		}
+		for flag := range ledgerFlags {
+			if command != "incident add" || flag != "--run" {
+				return invalid("flag does not apply to this incident command")
+			}
+		}
+		if command == "incident add" {
+			if strings.TrimSpace(opts.incident.runID) == "" {
+				return invalid("incident capture requires explicit --run")
+			}
+			if topFlag {
+				return invalid("--top requires recall or prom query")
+			}
+		}
+		return format, command, opts, nil
+	}
+	if incidentFlag {
+		return invalid("signature flags require incident add or recall")
+	}
+	promFlag = promFlag || topFlag
 	if len(positional) > 0 && positional[0] == "log" {
 		if len(positional) != 2 {
 			return invalid("usage: sre log RUN_ID [--slowest N] [--blocked] [--by-investigator]")
@@ -421,7 +463,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 			return format, "", opts, err
 		}
 	default:
-		return format, "", opts, errors.New("usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline --namespace NS [--format json|text]")
+		return format, "", opts, errors.New("usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline|run|ledger|incident add|recall [--format json|text]")
 	}
 	return format, command, opts, nil
 }
