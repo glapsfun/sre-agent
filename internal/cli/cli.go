@@ -13,6 +13,7 @@ import (
 
 	"github.com/glapsfun/sre-agent/internal/discover"
 	"github.com/glapsfun/sre-agent/internal/logs"
+	"github.com/glapsfun/sre-agent/internal/prom"
 	"github.com/glapsfun/sre-agent/internal/safety"
 )
 
@@ -49,6 +50,12 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 	if err == nil {
 		if command == "discover" {
 			data, err = discover.Discover(context.Background(), opts.discovery)
+		} else if command == "prom query" {
+			var report prom.Report
+			report, err = prom.Query(context.Background(), opts.prom)
+			if err == nil {
+				data, err = prom.Present(report)
+			}
 		} else if command == "logs fold" {
 			var report logs.Report
 			if opts.logs.Pod == "" {
@@ -89,7 +96,9 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 	}
 	var writeErr error
 	if format == "text" {
-		if report, ok := data.(logs.Report); ok && err == nil {
+		if report, ok := data.(prom.Report); ok && err == nil {
+			writeErr = writePromText(stdout, report)
+		} else if report, ok := data.(logs.Report); ok && err == nil {
 			writeErr = writeLogsText(stdout, report)
 		} else if command == "discover" && data != nil {
 			encoded, encodeErr := json.MarshalIndent(envelope.Data, "", "  ")
@@ -139,6 +148,7 @@ func writeLogsText(out io.Writer, report logs.Report) error {
 type commandOptions struct {
 	discovery discover.Options
 	logs      logs.PodOptions
+	prom      prom.Options
 }
 
 func parse(args []string) (string, string, commandOptions, error) {
@@ -146,20 +156,21 @@ func parse(args []string) (string, string, commandOptions, error) {
 	opts := commandOptions{}
 	var positional []string
 	discoveryFlag, logFlag, podFlag, contextFlag := false, false, false, false
+	promFlag, timeoutFlag := false, false
 	invalid := func(message string) (string, string, commandOptions, error) {
 		return "json", "", opts, errors.New(message)
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if !strings.HasPrefix(arg, "-") {
+		if !strings.HasPrefix(arg, "-") || (len(positional) == 2 && positional[0] == "prom" && positional[1] == "query" && !strings.HasPrefix(arg, "--")) {
 			positional = append(positional, arg)
 			continue
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since":
+		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top":
 		default:
-			return invalid("unknown flag; usage: sre version|discover|logs fold [--format json|text]")
+			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>' [--format json|text]")
 		}
 		if name == "--previous" && !hasValue {
 			value, hasValue = "true", true
@@ -180,16 +191,42 @@ func parse(args []string) (string, string, commandOptions, error) {
 			}
 			contextFlag = true
 			opts.discovery.Context, opts.logs.Context = value, value
+			opts.prom.Context = value
 		case "--only":
 			discoveryFlag = true
 			opts.discovery.Only = strings.Split(value, ",")
 		case "--timeout":
-			discoveryFlag = true
+			timeoutFlag = true
 			timeout, err := time.ParseDuration(value)
 			if err != nil || timeout <= 0 {
 				return invalid("timeout must be a positive duration")
 			}
 			opts.discovery.Timeout = timeout
+			opts.prom.Timeout = timeout
+		case "--url":
+			promFlag = true
+			if value == "" {
+				return invalid("url must not be empty")
+			}
+			opts.prom.URL = value
+		case "--range", "--step":
+			promFlag = true
+			duration, err := time.ParseDuration(value)
+			if err != nil || duration <= 0 {
+				return invalid(name + " must be a positive duration")
+			}
+			if name == "--range" {
+				opts.prom.Range = duration
+			} else {
+				opts.prom.Step = duration
+			}
+		case "--top":
+			promFlag = true
+			top, err := strconv.Atoi(value)
+			if err != nil || top <= 0 {
+				return invalid("top must be a positive integer")
+			}
+			opts.prom.Top = top
 		case "--max-patterns":
 			logFlag = true
 			maximum, err := strconv.Atoi(value)
@@ -230,20 +267,24 @@ func parse(args []string) (string, string, commandOptions, error) {
 		return invalid("--format requires json or text")
 	}
 	command := strings.Join(positional, " ")
+	if len(positional) == 3 && positional[0] == "prom" && positional[1] == "query" {
+		command = "prom query"
+		opts.prom.Query = positional[2]
+	}
 	switch command {
 	case "version":
-		if discoveryFlag || logFlag || podFlag || contextFlag {
+		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag {
 			return invalid("command flags require discover or logs fold")
 		}
 	case "discover":
-		if logFlag || podFlag {
-			return invalid("log flags require logs fold")
+		if logFlag || podFlag || promFlag {
+			return invalid("command flags require logs fold or prom query")
 		}
 		if err := discover.Validate(opts.discovery); err != nil {
 			return format, "", opts, err
 		}
 	case "logs fold":
-		if discoveryFlag {
+		if discoveryFlag || timeoutFlag || promFlag {
 			return invalid("discovery flags require discover")
 		}
 		if podFlag || contextFlag {
@@ -251,8 +292,15 @@ func parse(args []string) (string, string, commandOptions, error) {
 				return format, "", opts, err
 			}
 		}
+	case "prom query":
+		if discoveryFlag || logFlag || podFlag {
+			return invalid("command flags require discover or logs fold")
+		}
+		if err := prom.Validate(opts.prom); err != nil {
+			return format, "", opts, err
+		}
 	default:
-		return format, "", opts, errors.New("usage: sre version|discover|logs fold [--format json|text]")
+		return format, "", opts, errors.New("usage: sre version|discover|logs fold|prom query '<PromQL>' [--format json|text]")
 	}
 	return format, command, opts, nil
 }
