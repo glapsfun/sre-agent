@@ -6,3 +6,5 @@ ccbde6126cf525c9958c2526766b05f6e43ecb85:internal/safety/safety_test.go:private-
 abf1e7be821a0fce37ab8b606a2a65a6f1d59521:internal/logs/pod_test.go:private-key:24
 # Synthetic multiline redaction fixture with literal private-material placeholders.
 abf1e7be821a0fce37ab8b606a2a65a6f1d59521:internal/logs/fold_test.go:private-key:133
+# Synthetic ledger redaction fixture with literal body "fixture-material", not key material.
+534d7828d33b0159de1e29644a3db108b4dd9d20:internal/ledger/service_test.go:private-key:499
