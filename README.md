@@ -162,8 +162,8 @@ the component breakdown, and the degraded-environment behavior.
 ### Try the CLI from source
 
 Install the agent using one of the methods above, or run the CLI directly from
-this checkout with Go 1.26 or newer. The launcher's pinned `v0.17.0` release is
-not yet published (issue #5); these source commands do not need that release.
+this checkout with Go 1.26 or newer. If the launcher's pinned `v0.17.0` release
+is unavailable, these source commands do not need that release.
 
 ```bash
 go run ./cmd/sre version
