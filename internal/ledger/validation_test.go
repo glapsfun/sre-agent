@@ -327,6 +327,46 @@ func TestCaptureSnapshotDoesNotAliasInput(t *testing.T) {
 	}
 }
 
+func TestValidationRejectsIncompleteSnapshotHistory(t *testing.T) {
+	t.Run("omitted intermediate revocation", func(t *testing.T) {
+		entries := validationEntries(t)
+		p := decoded[Approval](t, entries[2])
+		p.Decision = "revoked"
+		appendValidationEntry(t, &entries, "revocation", KindApproval, p)
+		appendValidationEntry(t, &entries, "note", KindMetadata, map[string]any{"impact": "follow-up"})
+		run := validationRun(t, entries)
+		checkValidation(t, run, "unresolved", false)
+		run.Entries = append(run.Entries[:6], run.Entries[7:]...)
+		if run.ThroughSeq != 8 || len(run.Entries) != 7 {
+			t.Fatal("fixture did not retain snapshot identity while omitting revocation")
+		}
+		checkValidation(t, run, "unresolved", false)
+	})
+	t.Run("missing prefix", func(t *testing.T) {
+		var entries []Entry
+		appendValidationEntry(t, &entries, "initial-note", KindMetadata, map[string]any{"impact": "initial observation"})
+		for _, entry := range validationEntries(t) {
+			entry.Seq++
+			entries = append(entries, entry)
+		}
+		run := validationRun(t, entries)
+		checkValidation(t, run, "resolved", true)
+		run.Entries = run.Entries[1:]
+		if run.ThroughSeq != 7 || len(run.Entries) != 6 {
+			t.Fatal("fixture did not retain snapshot identity while omitting prefix")
+		}
+		checkValidation(t, run, "unresolved", false)
+	})
+}
+
+func TestValidationEmptyHistoryRemainsUnresolved(t *testing.T) {
+	run := validationRun(t, nil)
+	summary := checkValidation(t, run, "unresolved", false)
+	if !strings.Contains(strings.Join(summary.Reasons, "; "), "no expected behavior") {
+		t.Fatalf("empty history treated as a damaged snapshot: %+v", summary)
+	}
+}
+
 func TestValidationFreshnessAndStructure(t *testing.T) {
 	for _, tc := range []string{"empty observed", "empty source", "before action", "before criteria", "future pass", "reversed window", "window before action", "window after observation", "one endpoint", "wrong evidence", "early sequence"} {
 		t.Run(tc, func(t *testing.T) {

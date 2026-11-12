@@ -11,8 +11,8 @@ var ErrInvalidValidation = errors.New("invalid ledger validation")
 
 // EvaluateValidation derives the verdict from committed history, never narrative state.
 func EvaluateValidation(run Run) ValidationSummary {
-	snapshot, err := Reduce(run.ID, run.Problem, run.CreatedAt, run.Entries)
-	if err != nil || snapshot.ThroughSeq != run.ThroughSeq {
+	snapshot, err := validationSnapshot(run)
+	if err != nil {
 		return ValidationSummary{Verdict: "unresolved", Reasons: []string{"invalid ledger snapshot"}}
 	}
 	return evaluateSnapshot(snapshot)
@@ -21,8 +21,8 @@ func EvaluateValidation(run Run) ValidationSummary {
 // ValidateCapture returns a detached snapshot. Capture must load, validate and
 // insert within one caller-owned write transaction to serialize ledger changes.
 func ValidateCapture(run Run) (ValidatedRun, error) {
-	snapshot, err := Reduce(run.ID, run.Problem, run.CreatedAt, run.Entries)
-	if err != nil || snapshot.ThroughSeq != run.ThroughSeq {
+	snapshot, err := validationSnapshot(run)
+	if err != nil {
 		return ValidatedRun{}, fmt.Errorf("%w: invalid ledger snapshot", ErrNotValidated)
 	}
 	summary := evaluateSnapshot(snapshot)
@@ -30,6 +30,19 @@ func ValidateCapture(run Run) (ValidatedRun, error) {
 		return ValidatedRun{}, fmt.Errorf("%w: %s", ErrNotValidated, strings.Join(summary.Reasons, "; "))
 	}
 	return ValidatedRun{Run: snapshot, Validation: summary}, nil
+}
+
+func validationSnapshot(run Run) (Run, error) {
+	if run.ThroughSeq != int64(len(run.Entries)) {
+		return Run{}, ErrCorrupt
+	}
+	// A missing entry can hide a revocation without changing the last sequence.
+	for i, entry := range run.Entries {
+		if entry.Seq != int64(i)+1 {
+			return Run{}, ErrCorrupt
+		}
+	}
+	return Reduce(run.ID, run.Problem, run.CreatedAt, run.Entries)
 }
 
 func evaluateSnapshot(run Run) ValidationSummary {
