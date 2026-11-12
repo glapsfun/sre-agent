@@ -10,3 +10,13 @@ abf1e7be821a0fce37ab8b606a2a65a6f1d59521:internal/logs/fold_test.go:private-key:
 534d7828d33b0159de1e29644a3db108b4dd9d20:internal/ledger/service_test.go:private-key:499
 # Synthetic credential-redaction fixture with literal bearer value "planted-header".
 3a6063c65c49a66a393800ae487f0161f46311ac:internal/processlog/log_test.go:curl-auth-header:315
+# Synthetic hook regression with literal planted quoted credential tails.
+08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/cli/hook_test.go:curl-auth-user:448
+# Synthetic single-quoted credential regression with a literal planted tail.
+08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/processlog/log_test.go:curl-auth-user:338
+# Synthetic double-quoted credential regression with a literal planted tail.
+08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/processlog/log_test.go:curl-auth-user:339
+# Synthetic command-context fixture with literal user:plain credentials.
+08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/processlog/log_test.go:curl-auth-user:395
+# Synthetic multiline context fixture ending in literal user:plain credentials.
+08ad7148ea102a78dc0b8fc305510c6d549fc439:internal/processlog/log_test.go:curl-auth-user:396
