@@ -1,0 +1,14 @@
+[
+  {"fingerprint":"active","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","status":{"state":"active"},"labels":{"namespace":"ns","deployment":"api","alertname":"HighErrors","secret":"label-hidden"},"annotations":{"summary":"token=summary-hidden","description":"password=description-hidden","private":"annotation-hidden"},"generatorURL":"https://user:generator-hidden@example.invalid"},
+  {"fingerprint":"suppressed","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","status":{"state":"suppressed","silencedBy":["silence-id"],"inhibitedBy":["inhibitor-id"]},"labels":{"namespace":"ns","pod":"api-pod","controller":"api","controller_kind":"Deployment","alertname":"Suppressed"}},
+  {"fingerprint":"pending","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","status":{"state":"unprocessed"},"labels":{"namespace":"ns","workload":"api","workload_type":"deployment","alertname":"Pending"}},
+  {"fingerprint":"expired","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T12:00:00Z","labels":{"namespace":"ns","deployment":"api"}},
+  {"fingerprint":"future","startsAt":"2026-11-11T12:01:00Z","endsAt":"2026-11-11T13:00:00Z","labels":{"namespace":"ns","deployment":"api"}},
+  {"fingerprint":"pre-window","startsAt":"2026-11-11T09:00:00Z","endsAt":"2026-11-11T13:00:00Z","labels":{"namespace":"ns","deployment":"api","alertname":"LongRunning"}},
+  {"fingerprint":"similar-name","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","labels":{"namespace":"ns","deployment":"api-gateway"}},
+  {"fingerprint":"missing-workload","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","labels":{"namespace":"ns","app":"api"}},
+  {"fingerprint":"missing-namespace","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","labels":{"deployment":"api"}},
+  {"fingerprint":"conflict","startsAt":"2026-11-11T11:00:00Z","endsAt":"2026-11-11T13:00:00Z","labels":{"namespace":"ns","deployment":"api","pod":"api-gateway-pod"}},
+  {"fingerprint":"bad-date","startsAt":"bad token=date-hidden","endsAt":"2026-11-11T13:00:00Z","labels":{"namespace":"ns","deployment":"api"}},
+  {"fingerprint":"missing-date","startsAt":"2026-11-11T11:00:00Z","labels":{"namespace":"ns","deployment":"api"}}
+]
