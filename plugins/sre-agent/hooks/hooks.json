@@ -1,5 +1,5 @@
 {
-  "description": "Blocks commands that could change anything, and credential reads, for the sre-* investigator subagents",
+  "description": "Uses the Go checker to block commands that could change anything, and credential reads, for the sre-* investigator subagents",
   "hooks": {
     "PreToolUse": [
       {

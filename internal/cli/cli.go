@@ -46,6 +46,9 @@ func run(args []string, stdout, stderr io.Writer, dispatch func(string) (any, er
 }
 
 func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, dispatch func(string) (any, error)) int {
+	if len(args) == 2 && args[0] == "hook" && args[1] == "pre" {
+		return runHookPre(stdin, stderr)
+	}
 	format, command, opts, err := parse(args)
 	var data any
 	if err == nil {

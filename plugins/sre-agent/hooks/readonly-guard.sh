@@ -15,10 +15,9 @@ block() {
   exit 2
 }
 
-command -v python3 >/dev/null 2>&1 || block "python3 is needed to check commands and isn't available"
-
-# -I keeps a planted module next to the working directory or on PYTHONPATH from loading.
-python3 -I "$(dirname "${BASH_SOURCE[0]}")/readonly_guard.py" <<<"$input"
+launcher="$(dirname "${BASH_SOURCE[0]}")/../skills/sre-agent/scripts/sre"
+[[ -f "$launcher" ]] || block "the packaged checker launcher isn't available"
+bash "$launcher" hook pre <<<"$input"
 status=$?
 case "$status" in
   0 | 2) exit "$status" ;;
