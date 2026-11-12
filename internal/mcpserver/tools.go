@@ -190,8 +190,11 @@ func register[T any](s *Server, name, description, command string, handler func(
 		var fields map[string]any
 		var input T
 		invalid := !utf8.Valid(raw) || uniqueKeys(json.NewDecoder(bytes.NewReader(raw))) != nil || json.Unmarshal(raw, &fields) != nil || fields == nil
-		for _, v := range fields {
+		for name, v := range fields {
 			invalid = invalid || v == nil
+			if text, ok := v.(string); ok && name != "text" {
+				invalid = invalid || strings.TrimSpace(text) == ""
+			}
 		}
 		if invalid || resolved.Validate(fields) != nil || json.Unmarshal(raw, &input) != nil {
 			return toolResult(failure("tool input error", errors.New("invalid tool arguments; consult the tool input schema"))), nil
@@ -346,6 +349,11 @@ func registerTools(s *Server, d dependencies) {
 		opts := timeline.Options{Context: in.Context, Namespace: in.Namespace, Workload: value(in.Workload), Repo: value(in.Repo), AlertmanagerURL: value(in.AlertmanagerURL), Since: since, Timeout: timeout}
 		if err := timeline.Validate(opts); err != nil {
 			return failure("timeline error", err)
+		}
+		if in.AlertmanagerURL != nil {
+			if _, err := timeline.ParseAlertmanagerURL(*in.AlertmanagerURL); err != nil {
+				return failure("timeline error", err)
+			}
 		}
 		r, err := d.collect(ctx, opts)
 		if err != nil {

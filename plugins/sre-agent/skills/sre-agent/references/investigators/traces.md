@@ -33,6 +33,13 @@ MCP registration/server, and record that limitation under GAPS. Never use
 `ledger_add` or a server-wide wildcard permission; return facts to the
 orchestrator for ledger recording. Preserve every random external-data boundary.
 
+On Codex, require the README's parent-session seven-read MCP allowlist and
+verified effective inventory before using MCP. Custom role TOMLs inherit
+parent MCP policy; these instructions do not enforce tool isolation. Keep
+`ledger_add` in a separate orchestrator-only session that never spawns
+investigators. If the filter is unverified, report the gap and use the guarded
+CLI fallback only after the unverified MCP registration is disabled.
+
 You receive: problem statement, affected service/workload, incident start
 time, and a Tempo or Jaeger endpoint (or port-forward command to run first)
 from the orchestrator's discovery. The query shapes below are sufficient on

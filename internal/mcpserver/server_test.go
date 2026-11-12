@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -138,6 +141,113 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func TestUnicodeWhitespaceBeforeDispatch(t *testing.T) {
+	for _, whitespace := range []string{"\u00a0", "\u2003"} {
+		for _, tc := range []struct{ name, input string }{
+			{"timeline", `{"context":"pin","namespace":"ns","repo":%q}`},
+			{"recall", `{"service":"api","symptom":"errors","fingerprint":"error","repo":%q}`},
+			{"recall", `{"service":%q,"symptom":"errors","fingerprint":"error"}`},
+			{"recall", `{"service":"api","symptom":"errors","fingerprint":%q}`},
+			{"run_resume", `{"run_id":"run","repo":%q}`},
+			{"report", `{"run_id":"run","repo":%q}`},
+			{"ledger_add", `{"run_id":"run","id":"entry","kind":"evidence","payload":{"fact":"f","source":"s"},"repo":%q}`},
+		} {
+			t.Run(tc.name+"/"+fmt.Sprintf("%U", []rune(whitespace)[0])+"/"+tc.input, func(t *testing.T) {
+				var calls atomic.Int32
+				cs := connectTest(t, newServer(dependencies{
+					open: func(context.Context, string) (*store.Store, error) {
+						calls.Add(1)
+						return nil, errors.New("unexpected open")
+					},
+					collect: func(context.Context, timeline.Options) (timeline.Report, error) {
+						calls.Add(1)
+						return timeline.Report{}, errors.New("unexpected collection")
+					},
+				}))
+				if r := callTest(t, cs, tc.name, fmt.Sprintf(tc.input, whitespace)); !r.IsError {
+					t.Fatal("accepted whitespace-only input")
+				}
+				if calls.Load() != 0 {
+					t.Fatalf("invalid input dispatched %d services", calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestTimelineURLBeforeDispatch(t *testing.T) {
+	for _, endpoint := range []string{"not-a-url", "http://%zz", "ftp://alerts.example", "https://user:password@alerts.example", "https://alerts.example/#fragment"} {
+		t.Run(endpoint, func(t *testing.T) {
+			var calls atomic.Int32
+			cs := connectTest(t, newServer(dependencies{collect: func(context.Context, timeline.Options) (timeline.Report, error) {
+				calls.Add(1)
+				return timeline.Report{}, errors.New("unexpected collection")
+			}}))
+			input, _ := json.Marshal(map[string]string{"context": "pin", "namespace": "ns", "alertmanager_url": endpoint})
+			if r := callTest(t, cs, "timeline", string(input)); !r.IsError {
+				t.Fatal("accepted invalid URL")
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("invalid URL dispatched %d services", calls.Load())
+			}
+		})
+	}
+}
+
+func TestNonemptyInputBytesAndEmptyLogs(t *testing.T) {
+	repo := "\u00a0repo\u2003"
+	var received string
+	cs := connectTest(t, newServer(dependencies{open: func(_ context.Context, path string) (*store.Store, error) {
+		received = path
+		return nil, errors.New("expected open")
+	}}))
+	input, _ := json.Marshal(map[string]string{"run_id": "run", "repo": repo})
+	callTest(t, cs, "run_resume", string(input))
+	if received != repo {
+		t.Fatalf("repo changed: %q", received)
+	}
+	for _, text := range []string{"", "\u00a0\u2003"} {
+		input, _ := json.Marshal(map[string]string{"context": "pin", "text": text})
+		if r := callTest(t, cs, "logs_fold", string(input)); r.IsError {
+			t.Fatalf("valid inline text rejected: %+v", r)
+		}
+	}
+}
+
+func TestTimelineValidURLRetainsRuntimeGap(t *testing.T) {
+	var requests atomic.Int32
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/api/v2/alerts" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer endpoint.Close()
+	cs := connectTest(t, newServer(dependencies{collect: func(ctx context.Context, opts timeline.Options) (timeline.Report, error) {
+		scope := timeline.Scope{Context: opts.Context, Namespace: opts.Namespace, AlertmanagerURL: opts.AlertmanagerURL}
+		return timeline.Merge(scope, []timeline.SourceResult{timeline.CollectAlerts(ctx, scope, endpoint.Client())}), nil
+	}}))
+	input, _ := json.Marshal(map[string]string{"context": "pin", "namespace": "ns", "alertmanager_url": endpoint.URL})
+	r := callTest(t, cs, "timeline", string(input))
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d", requests.Load())
+	}
+	raw, _ := json.Marshal(r.StructuredContent)
+	var result struct {
+		Data timeline.Report `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, gap := range result.Data.Gaps {
+		if gap.Source == "alertmanager" && gap.Code == "error" && strings.Contains(gap.Message, "503") {
+			return
+		}
+	}
+	t.Fatalf("runtime source gap lost: %s", raw)
 }
 
 func TestDiscoveryDeadlineAndContext(t *testing.T) {

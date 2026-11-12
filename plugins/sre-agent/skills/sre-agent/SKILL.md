@@ -87,6 +87,16 @@ only; never grant it to an investigator. A server-wide wildcard includes ledger
 writes and is not the recommended read-only setup. Read-only annotations do
 not replace guard enforcement or the read-only identity.
 
+For Codex, require the parent-session seven-read allowlist for either bundled
+or manual registration in the [README setup](../../README.md#required-codex-investigator-permissions).
+Before dispatch, verify the effective tool list excludes `ledger_add` and
+contains exactly the seven reads above, then check pinned-context `discover`.
+Custom role TOMLs inherit parent MCP policy; their instructions do not isolate
+tools. Keep ledger writes in a separate orchestrator-only session that never
+spawns investigators. Never enable writes in an investigator parent session.
+If filtering is unverified, disable that MCP registration and record the gap;
+retain the guarded CLI fallback.
+
 Use `ledger_add` for the ledger workflow below only when that separate
 permission is available; otherwise retain `sre ledger add`. Start runs and
 bind sessions through the existing CLI: MCP `run_resume` does not bind a
