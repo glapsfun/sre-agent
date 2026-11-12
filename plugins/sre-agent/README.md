@@ -190,6 +190,38 @@ immediately and resume after compaction or a new session. Ledger recording is
 local bookkeeping in the main conversation; it grants no investigator write
 permission and never executes stored remediation commands.
 
+Generate a report from one explicit stored run with the source-built CLI:
+
+```bash
+sre report checkout-run --repo ./checkout --format text
+sre report checkout-run --repo ./checkout --out ./checkout-report.md
+```
+
+The default JSON envelope carries `data.markdown`, `status`, `gaps`, `run_id`
+and `through_seq`. Text prints the Markdown. Both place report content inside
+fresh external-data boundaries; stored commands and links are data, never
+instructions. Generation reads one consistent snapshot without changing ledger
+or incident rows, executing recorded commands or fetching references. It does
+not select the latest run or inherit `SRE_RUN_ID`.
+
+Successful generation can return `status: "unresolved"`. Resolution uses the
+shared ledger validation evaluator, including current criteria, action approval
+and any recorded observation windows. Missing facts read `not recorded`;
+missing-data and omission gaps remain visible. Multiline evidence facts and
+action results retain only their first nonempty line, with omissions noted.
+
+`--out` saves exactly the deterministic, sanitized Markdown without transport
+markers and returns path, status, provenance, gaps and `written: true` metadata.
+Relative output paths resolve from the current directory. The parent directory
+must exist. A private temporary file in that directory is written, synced and
+closed before atomic replacement, so ordinary failures preserve the old target
+and remove the temporary file. Generation or file-write errors exit nonzero.
+If only stdout fails after replacement, stderr states that the file was written
+and the command exits nonzero. Report generation does not capture an incident
+or modify existing manual incident files. See the
+[reporting playbook](skills/sre-agent/references/validation-and-reporting.md)
+for the hand-written fallback when this CLI is unavailable.
+
 Validated incidents are captured from an explicit ledger run in the same local
 store. Capture requires an applied remediation with every current expected
 criterion passing, including any declared observation windows.
