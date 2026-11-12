@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"time"
 
@@ -27,6 +28,20 @@ type Runner struct {
 }
 
 func (r Runner) Run(ctx context.Context, name string, args ...string) Result {
+	return r.execute(ctx, nil, name, args...)
+}
+
+// Stream sends raw stdout to a trusted consumer, which must redact it before
+// retention or presentation. Stderr and errors retain Run's redaction rules.
+// The consumer must return promptly from Write, including during cancellation.
+func (r Runner) Stream(ctx context.Context, output io.Writer, name string, args ...string) Result {
+	if output == nil {
+		return Result{Err: errors.New("stream output is required")}
+	}
+	return r.execute(ctx, output, name, args...)
+}
+
+func (r Runner) execute(ctx context.Context, output io.Writer, name string, args ...string) Result {
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -39,6 +54,9 @@ func (r Runner) Run(ctx context.Context, name string, args ...string) Result {
 	configureProcess(cmd)
 	stdout, stderr := responseBuffer{cancel: cancel}, responseBuffer{cancel: cancel}
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if output != nil {
+		cmd.Stdout = cancelWriter{output: output, cancel: cancel}
+	}
 	err := cmd.Run()
 	// WaitDelay closes inherited pipes after an early parent exit, but its
 	// context watcher has already stopped and cannot clean up descendants.
@@ -82,6 +100,22 @@ func (r Runner) Run(ctx context.Context, name string, args ...string) Result {
 		}
 	}
 	return result
+}
+
+type cancelWriter struct {
+	output io.Writer
+	cancel context.CancelFunc
+}
+
+func (w cancelWriter) Write(p []byte) (int, error) {
+	n, err := w.output.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.cancel()
+	}
+	return n, err
 }
 
 // Reject oversized output instead of letting a subprocess exhaust memory before
