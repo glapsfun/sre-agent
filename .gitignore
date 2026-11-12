@@ -11,6 +11,7 @@
 .claude/settings.local.json
 .agents/*
 .docs
+.sre-agent/
 
 # Python bytecode from running the skill's scripts and tests
 __pycache__/

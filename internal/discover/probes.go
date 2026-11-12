@@ -119,7 +119,14 @@ func has(items []resource, name string) bool {
 }
 func boolean(v bool) *bool { return &v }
 func (p *probe) safe(s string) string {
+	if err := p.err(); err != nil {
+		p.check("external scalar", executil.Result{Err: err})
+		return ""
+	}
 	value, err := safety.NewRedactor().RedactContext(p.ctx, s)
+	if err == nil {
+		err = p.err()
+	}
 	if err != nil {
 		p.check("external scalar", executil.Result{Err: err})
 		return ""
@@ -161,7 +168,7 @@ func (p *probe) environment() {
 		if nodesOK {
 			seen := map[string]bool{}
 			for _, node := range nodes {
-				if p.ctx.Err() != nil {
+				if p.err() != nil {
 					return
 				}
 				id := node.Spec.ProviderID
@@ -227,7 +234,7 @@ func (p *probe) observability() {
 	if services, ok := p.list(ctx, "services", "--all-namespaces"); ok {
 		o.EndpointInventoryComplete = true
 		for _, svc := range services {
-			if p.ctx.Err() != nil {
+			if p.err() != nil {
 				o.EndpointInventoryComplete = false
 				return
 			}
@@ -290,7 +297,7 @@ func (p *probe) observability() {
 	}
 	if ingresses, ok := p.list(ctx, "ingresses", "--all-namespaces"); ok {
 		for _, ing := range ingresses {
-			if p.ctx.Err() != nil {
+			if p.err() != nil {
 				return
 			}
 			hosts := []string{}
