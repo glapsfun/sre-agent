@@ -268,6 +268,27 @@ func TestCommandParity(t *testing.T) {
 	}
 }
 
+func TestSedNextLineWhitespace(t *testing.T) {
+	cases := []struct{ name, command, reason string }{
+		{"execute separator", "sed 'e\u0085rm' f", "sed would edit a file or run a command"},
+		{"write separator", "sed 'w\u0085out' f", "sed would edit a file or run a command"},
+		{"execute prefix", "sed 'x\u0085e rm' f", "sed would edit a file or run a command"},
+		{"write prefix", "sed 'x\u0085w out' f", "sed would edit a file or run a command"},
+		{"execute missing operand", "sed 'e \u0085' f", ""},
+		{"write missing operand", "sed 'w \u0085' f", ""},
+		{"execute substitution suffix", "sed 's/a/b/e\u0085x' f", "sed would edit a file or run a command"},
+		{"write substitution suffix", "sed 's/a/b/w\u0085x' f", "sed would edit a file or run a command"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Check(Event{Agent: "sre-k8s-investigator", Tool: "Bash", Input: []byte(`{"command":` + quoteCommand(tc.command) + `}`)})
+			if got.Reason != tc.reason || got.Block != (tc.reason != "") {
+				t.Fatalf("got %#v, want reason %q", got, tc.reason)
+			}
+		})
+	}
+}
+
 func TestScannerAndRuleEdges(t *testing.T) {
 	cases := []struct{ command, reason string }{
 		{"echo \"$(echo `kubectl delete pod x`)\"", "kubectl delete pod isn't a read-only command"},

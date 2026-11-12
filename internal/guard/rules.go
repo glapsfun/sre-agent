@@ -41,7 +41,7 @@ var curlShortValueFlags = set("A", "C", "E", "H", "Y", "b", "e", "m", "r", "u", 
 var curlShortWriteFlags = set("D", "F", "K", "O", "T", "c")
 var credentialPath = regexp.MustCompile("\\.kube(/|\\n?$)|\\.aws(/|\\n?$)|\\.config/gcloud|\\.azure(/|\\n?$)|\\.ssh(/|\\n?$)|\\.netrc|\\.pgpass|\\.docker/config|\\.git-credentials|application_default_credentials|/var/run/secrets/|/proc/[^/]+/environ")
 var assignment = regexp.MustCompile("^([A-Za-z_][A-Za-z0-9_]*)\\+?=")
-var sedRunsOrWrites = regexp.MustCompile("(^|[;{}\\p{Z}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}/0-9$,])[ew][\\p{Z}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}]+[^\\p{Z}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}]|/[gpIi0-9]*[ew]([\\p{Z}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}]|;|}|$)")
+var sedRunsOrWrites = regexp.MustCompile("(^|[;{}\\p{Z}\\x{0085}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}/0-9$,])[ew][\\p{Z}\\x{0085}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}]+[^\\p{Z}\\x{0085}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}]|/[gpIi0-9]*[ew]([\\p{Z}\\x{0085}\\t\\n\\r\\f\\v\\x{001c}-\\x{001f}]|;|}|$)")
 var awsReadOperation = regexp.MustCompile("^(describe|list|get|lookup|search|filter|batch-get|head)-")
 var awsSecretOperation = regexp.MustCompile("secret-value|password|session-token|federation-token|authorization-token|get-token|credential")
 var gcloudReadVerb = regexp.MustCompile("^(list.*|describe.*|read|tail|search.*|analyze.*|get-.*|info|version)\\n?$")
