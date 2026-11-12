@@ -441,3 +441,53 @@ func TestConfiguredHookCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestHookCredentialArgumentFragmentsAreNotReported(t *testing.T) {
+	root := ledgerRepo(t)
+	ledgerData(t, root, "", "run", "start", "redaction regression", "--id", "one", "--session-id", "session-one")
+	commands := []string{`curl -u'user:prefix planted-quoted-tail' https://example.test`, `curl -u"user:prefix planted-double-tail" https://example.test`, `curl --token prefix\ planted-escaped-tail https://example.test`}
+	for i, command := range commands {
+		e := fullHook(root, fmt.Sprintf("credential-%d", i), "PreToolUse", "Bash", map[string]any{"command": command})
+		for range 2 {
+			if code, stderr := invokeHook(t, "pre", e); code != 0 || stderr != "" {
+				t.Fatalf("guard decision changed: %d %q", code, stderr)
+			}
+		}
+		e["hook_event_name"] = "PostToolUse"
+		if code, stderr := invokeHook(t, "post", e); code != 0 || stderr != "" {
+			t.Fatalf("post: %d %q", code, stderr)
+		}
+	}
+	r := hookReport(t, root, "one")
+	if len(r.Calls) != 3 {
+		t.Fatalf("rows: %+v", r)
+	}
+	for _, c := range r.Calls {
+		if c.GuardDecision == nil || *c.GuardDecision != "allowed" || c.Outcome != "succeeded" {
+			t.Fatal(c)
+		}
+	}
+	for _, format := range []string{"json", "text"} {
+		var out, stderr bytes.Buffer
+		code := RunWithInput([]string{"log", "one", "--repo", root, "--format", format}, strings.NewReader(""), &out, &stderr)
+		if code != 0 || stderr.Len() != 0 {
+			t.Fatalf("query: %d %q", code, &stderr)
+		}
+		if strings.Contains(out.String(), "planted-") || strings.Contains(out.String(), "prefix") {
+			t.Errorf("credential leaked in %s output: %s", format, &out)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(root, ".sre-agent", "sre.db*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "planted-") || strings.Contains(string(raw), "prefix") {
+			t.Errorf("credential persisted in %s", filepath.Base(file))
+		}
+	}
+}

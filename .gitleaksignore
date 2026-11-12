@@ -8,3 +8,5 @@ abf1e7be821a0fce37ab8b606a2a65a6f1d59521:internal/logs/pod_test.go:private-key:2
 abf1e7be821a0fce37ab8b606a2a65a6f1d59521:internal/logs/fold_test.go:private-key:133
 # Synthetic ledger redaction fixture with literal body "fixture-material", not key material.
 534d7828d33b0159de1e29644a3db108b4dd9d20:internal/ledger/service_test.go:private-key:499
+# Synthetic credential-redaction fixture with literal bearer value "planted-header".
+3a6063c65c49a66a393800ae487f0161f46311ac:internal/processlog/log_test.go:curl-auth-header:315

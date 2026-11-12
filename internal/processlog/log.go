@@ -47,9 +47,35 @@ var secretFlag = regexp.MustCompile(`(?i)((?:--[a-z0-9_-]*(?:password|passwd|tok
 var attachedUser = regexp.MustCompile(`(^|\s)(-u)[^\s;|&]+`)
 
 func sanitize(ctx context.Context, value string) (string, error) {
+	// Only syntax inside a credential argument makes its span ambiguous; quoted
+	// URLs or other unrelated arguments must retain useful command context.
+	for _, match := range secretFlag.FindAllStringSubmatchIndex(value, -1) {
+		if ambiguousCredential(value[match[4]:]) {
+			return "[REDACTED]", ctx.Err()
+		}
+	}
+	for _, match := range attachedUser.FindAllStringSubmatchIndex(value, -1) {
+		if ambiguousCredential(value[match[5]:]) {
+			return "[REDACTED]", ctx.Err()
+		}
+	}
 	value = attachedUser.ReplaceAllString(value, "${1}${2}[REDACTED]")
 	value = secretFlag.ReplaceAllString(value, "${1}[REDACTED]")
 	return safety.NewRedactor().RedactContext(ctx, value)
+}
+
+// A simple shell word ends at an unquoted separator. Anything requiring shell
+// interpretation is omitted rather than partially redacted with a regex.
+func ambiguousCredential(argument string) bool {
+	for _, char := range argument {
+		switch char {
+		case ' ', '\t', '\n', '\r', '\f', '\v', ';', '|', '&':
+			return false
+		case '\'', '"', '\\', '`', '$', '(', ')', '{', '}', '[', ']', '*', '?', '<', '>':
+			return true
+		}
+	}
+	return false
 }
 
 func prepare(ctx context.Context, e Entry) (Entry, error) {

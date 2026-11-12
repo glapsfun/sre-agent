@@ -287,7 +287,9 @@ The timestamp records the first observation, not a tool start time. Absent durat
 status remain null. The hook adapter does not infer process exit status from tool output or failure text.
 
 Metadata contains sanitized command/path text, never complete inputs, responses, or failure messages.
-Credential patterns and flags are redacted before writing. Identity fields that require redaction are
+Credential patterns and flags are redacted before writing. Ambiguous credential arguments cause the
+entire command text to be stored as `[REDACTED]`; simple values retain sanitized command context.
+Identity fields that require redaction are
 rejected to avoid identity collisions. Do not place arbitrary secret values in commands or identifiers.
 The first observation pins the validated run and call metadata. Contradictory events or metadata produce
 an absorbing `conflict` outcome and clear numeric metrics; a run-binding conflict leaves the original row

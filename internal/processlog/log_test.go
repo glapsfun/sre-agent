@@ -332,3 +332,83 @@ func TestCredentialFlagFormsDoNotReachDatabase(t *testing.T) {
 		t.Fatal("credential flag leaked")
 	}
 }
+
+func TestCredentialArgumentFragmentsDoNotReachStorage(t *testing.T) {
+	cases := []struct{ name, command string }{
+		{"attached single quote", `curl -u'user:prefix planted-quoted-tail' https://example.test`},
+		{"attached double quote", `curl -u"user:prefix planted-double-tail" https://example.test`},
+		{"escaped space", `curl --token prefix\ planted-escaped-tail https://example.test`},
+		{"separate single quote concatenation", `curl --token 'prefix 'planted-single-tail https://example.test`},
+		{"separate double quote concatenation", `curl --token "prefix "planted-double-concat https://example.test`},
+		{"equals quote concatenation", `curl --password='prefix 'planted-equals-tail https://example.test`},
+		{"attached mixed fragments", `curl -uuser:'prefix 'planted-attached-tail https://example.test`},
+		{"mixed escaped fragments", `curl --token prefix\ planted-escaped\ tail https://example.test`},
+		{"escaped quote", `curl --token "prefix\" planted-quote-tail" https://example.test`},
+		{"line continuation", "curl --token prefix\\\nplanted-line-tail https://example.test"},
+		{"parameter expansion", `curl --token ${value:-prefix planted-expansion-tail} https://example.test`},
+		{"command substitution", `curl --token $(printf 'prefix planted-substitution-tail') https://example.test`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, root := testStore(t)
+			e := event("credential-call", "pre")
+			e.Command = tc.command
+			if err := Record(t.Context(), s, e); err != nil {
+				t.Fatal(err)
+			}
+			e.Event = "success"
+			e.GuardDecision = nil
+			if err := Record(t.Context(), s, e); err != nil {
+				t.Fatal(err)
+			}
+			r := calls(t, s, Filter{})
+			if len(r.Calls) != 1 || r.Calls[0].SessionID != "session-one" || r.Calls[0].ToolUseID != "credential-call" || r.Calls[0].GuardDecision == nil || *r.Calls[0].GuardDecision != "allowed" || r.Calls[0].Outcome != "succeeded" {
+				t.Fatalf("identity/reconciliation changed: %+v", r)
+			}
+			encoded, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "planted-") || strings.Contains(string(encoded), "prefix") {
+				t.Errorf("credential fragment leaked in query: %s", encoded)
+			}
+			files, err := filepath.Glob(filepath.Join(root, ".sre-agent", "sre.db*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				raw, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(raw), "planted-") || strings.Contains(string(raw), "prefix") {
+					t.Errorf("credential fragment persisted in %s", filepath.Base(file))
+				}
+			}
+		})
+	}
+}
+
+func TestSimpleCredentialArgumentsRetainUsefulCommandContext(t *testing.T) {
+	s, _ := testStore(t)
+	for i, tc := range []struct{ command, want string }{
+		{`curl -uuser:plain https://example.test`, `curl -u[REDACTED] https://example.test`},
+		{`curl --token simple-value https://example.test`, `curl --token [REDACTED] https://example.test`},
+		{`curl --password=simple-value https://example.test`, `curl --password=[REDACTED] https://example.test`},
+		{`kubectl get pods -n shop`, `kubectl get pods -n shop`},
+		{`curl --token planted-simple 'https://example.test/path with spaces'`, `curl --token [REDACTED] 'https://example.test/path with spaces'`},
+		{`curl --token simple-value https://example.test | grep 'ready now'`, `curl --token [REDACTED] https://example.test | grep 'ready now'`},
+		{`curl -uuser:plain "https://example.test/path with spaces"`, `curl -u[REDACTED] "https://example.test/path with spaces"`},
+		{`curl --token simple-value https://example.test && echo "$status"`, `curl --token [REDACTED] https://example.test && echo "$status"`},
+	} {
+		e := event(fmt.Sprintf("simple-%d", i), "pre")
+		e.Command = tc.command
+		if err := Record(t.Context(), s, e); err != nil {
+			t.Fatal(err)
+		}
+		r := calls(t, s, Filter{})
+		if r.Calls[i].Command != tc.want {
+			t.Fatalf("useful context lost: got %q want %q", r.Calls[i].Command, tc.want)
+		}
+	}
+}
