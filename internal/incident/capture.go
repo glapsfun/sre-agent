@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/glapsfun/sre-agent/internal/ledger"
 	"github.com/glapsfun/sre-agent/internal/safety"
@@ -35,15 +34,8 @@ func (s *Service) Capture(ctx context.Context, opts CaptureOptions) (Incident, e
 	if strings.TrimSpace(opts.RunID) == "" {
 		return Incident{}, errors.New("capture requires an explicit run identifier")
 	}
-	for _, field := range []struct{ name, value string }{{"service", opts.Service}, {"fingerprint", opts.Fingerprint}} {
-		if !utf8.ValidString(field.value) || strings.TrimSpace(field.value) == "" {
-			return Incident{}, fmt.Errorf("%s must be nonempty UTF-8 text", field.name)
-		}
-	}
-	switch opts.Symptom {
-	case "crashloop", "latency", "errors", "metrics", "oom", "networking", "availability":
-	default:
-		return Incident{}, errors.New("symptom must be one of: crashloop, latency, errors, metrics, oom, networking, availability")
+	if err := validateSignature(opts.Service, opts.Symptom, opts.Fingerprint); err != nil {
+		return Incident{}, err
 	}
 	redactor := safety.NewRedactor()
 	var err error

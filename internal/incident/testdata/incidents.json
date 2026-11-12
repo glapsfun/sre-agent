@@ -1,0 +1,8 @@
+[
+  {"run_id":"other-service","through_seq":9,"captured_at":"2026-11-12T12:00:00Z","service":"payments","symptom":"oom","fingerprint":"pod checkout-abcdef1234-abcde OOMKilled exit 137 request 550e8400-e29b-41d4-a716-446655440000"},
+  {"run_id":"checkout-wrong-symptom","through_seq":9,"captured_at":"2026-11-12T12:00:00Z","service":"checkout","symptom":"crashloop","fingerprint":"pod checkout-abcdef1234-abcde OOMKilled exit 137 request 550e8400-e29b-41d4-a716-446655440000"},
+  {"run_id":"checkout-oom-old","through_seq":9,"captured_at":"2026-11-11T12:00:00Z","service":"checkout","symptom":"oom","fingerprint":"pod checkout-9876fedcba-vwxyz OOMKilled exit 143 request 123e4567-e89b-12d3-a456-426614174000"},
+  {"run_id":"checkout-oom-z","through_seq":9,"captured_at":"2026-11-12T12:00:00Z","service":"checkout","symptom":"oom","fingerprint":"pod checkout-1234abcdef-fghij OOMKilled exit 139 request 123e4567-e89b-12d3-a456-426614174000"},
+  {"run_id":"checkout-oom-a","through_seq":9,"captured_at":"2026-11-12T12:00:00Z","service":"checkout","symptom":"oom","fingerprint":"pod checkout-fedcba9876-klmno OOMKilled exit 138 request 123e4567-e89b-12d3-a456-426614174000"},
+  {"run_id":"unrelated","through_seq":9,"captured_at":"2026-11-13T12:00:00Z","service":"catalog","symptom":"networking","fingerprint":"DNS lookup timeout"}
+]

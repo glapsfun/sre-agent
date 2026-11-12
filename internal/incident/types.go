@@ -13,6 +13,26 @@ type CaptureOptions struct {
 	Fingerprint string
 }
 
+type RecallOptions struct {
+	Service     string
+	Symptom     string
+	Fingerprint string
+	Top         int
+}
+
+type Match struct {
+	Incident   Incident `json:"incident"`
+	Score      int      `json:"score"`
+	Similarity float64  `json:"similarity"`
+	Reasons    []string `json:"reasons"`
+}
+
+type RecallResult struct {
+	Matches []Match `json:"matches"`
+	Total   int     `json:"total"`
+	Message string  `json:"message"`
+}
+
 type Incident struct {
 	RunID       string    `json:"run_id"`
 	ThroughSeq  int64     `json:"through_seq"`
