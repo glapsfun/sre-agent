@@ -23,7 +23,6 @@ when a sibling skill is absent, it only sharpens when one is present.
 | The same for GitLab-hosted repos: glab CLI details, debugging `.gitlab-ci.yml` pipelines implicated in the incident | `glab-guru` | `references/glab-cli.md`, `references/troubleshooting.md` | Inline `glab` hints in `investigators/changes.md` + general knowledge |
 | Deep gcloud CLI work while investigating a GCP/GKE incident: command/flag lookup after a `GAP: query failed` from flag drift, `--format`/`--filter` projection syntax, auth/config troubleshooting | `gcloud` | `references/command-map.md`, `references/scripting-output.md`, `references/auth.md` | This skill's own `references/gcloud-investigation.md` raw-fallback commands + general knowledge |
 | Deep AWS CLI work while investigating an AWS/EKS incident: command/flag lookup after a `GAP: query failed` from flag drift, `--query`/JMESPath output shaping, credential/profile troubleshooting | `aws` | `references/command-map.md`, `references/output-query-scripting.md`, `references/auth-credentials.md` | This skill's own `references/aws-investigation.md` raw-fallback commands + general knowledge |
-| A cost or billing question comes up during an investigation, or a change is expected to affect spend | `finops` | Its report and `references/troubleshooting.md` | Note the cost question in the ledger and continue |
 
 Karpenter is carried over here from `SKILL.md`'s prior "Reuse installed
 skills" paragraph — it isn't one of the five skills this file was written
