@@ -2,6 +2,7 @@ package prom
 
 import (
 	"context"
+	"debug/buildinfo"
 	"errors"
 	"fmt"
 	"io"
@@ -12,11 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/glapsfun/sre-agent/internal/discover"
@@ -108,10 +111,22 @@ func TestActualKubectlPreservesPrometheusHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 	dir := installActualKubectl(t, server.URL)
+	sampleCtx, stopSample := context.WithCancel(context.Background())
+	defer stopSample()
+	sample := sampleKubectlStartup(sampleCtx, dir)
 	started := time.Now()
 	_, err := selectedService().Query(context.Background(), Options{Query: "broken", Context: "pinned", Timeout: 5 * time.Second})
-	t.Logf("query elapsed=%s upstream_requests=%d handlers_completed=%d", time.Since(started), requests.Load(), responses.Load())
+	elapsed := time.Since(started)
+	stopSample()
+	var observations []string
+	for observation := range sample {
+		observations = observation
+	}
+	t.Logf("query elapsed=%s upstream_requests=%d handlers_completed=%d", elapsed, requests.Load(), responses.Load())
 	if err == nil || !strings.Contains(err.Error(), "parse error unexpected identifier") || strings.Contains(err.Error(), "hidden") || !strings.Contains(err.Error(), "BEGIN EXTERNAL DATA") {
+		for _, observation := range observations {
+			t.Logf("startup sample: %s", safety.NewRedactor().Redact(observation))
+		}
 		logActualKubectlDiagnostics(t, dir)
 		t.Fatalf("error body lost or unsafe: %v", err)
 	}
@@ -151,6 +166,21 @@ exec "$PROM_REAL_KUBECTL" "$@" > "$PROM_FIXTURE/proxy.stdout" 2> "$PROM_FIXTURE/
 
 func logActualKubectlDiagnostics(t *testing.T, dir string) {
 	t.Helper()
+	real := os.Getenv("PROM_REAL_KUBECTL")
+	resolved, resolveErr := filepath.EvalSymlinks(real)
+	t.Logf("kubectl executable=%q resolved=%q resolve_error=%v", real, resolved, resolveErr)
+	// Read executable pages only after failure so this cannot warm startup.
+	info, buildErr := buildinfo.ReadFile(real)
+	if buildErr != nil {
+		t.Logf("kubectl offline build info: %v", buildErr)
+	} else {
+		t.Logf("kubectl offline build: go=%q main=%q version=%q", info.GoVersion, info.Main.Path, info.Main.Version)
+		for _, dependency := range info.Deps {
+			if dependency.Path == "k8s.io/kubectl" || dependency.Path == "k8s.io/client-go" {
+				t.Logf("kubectl module: %s@%s", dependency.Path, dependency.Version)
+			}
+		}
+	}
 	_, launchErr := os.Stat(filepath.Join(dir, "proxy.pid"))
 	socket, socketErr := os.ReadFile(filepath.Join(dir, "proxy.socket"))
 	var socketPresent, directoryPresent bool
@@ -185,6 +215,53 @@ func logActualKubectlDiagnostics(t *testing.T, dir string) {
 	t.Logf("kubectl client version: %q error=%v", version.Stdout, version.Err)
 }
 
+func sampleKubectlStartup(ctx context.Context, dir string) <-chan []string {
+	result := make(chan []string, 1)
+	go func() {
+		defer close(result)
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			if ctx.Err() == nil {
+				result <- kubectlStartupObservations(dir, runtime.GOOS)
+			}
+		}
+	}()
+	return result
+}
+
+func kubectlStartupObservations(dir, platform string) []string {
+	if platform != "linux" {
+		return []string{"proc observations unsupported on " + platform}
+	}
+	file, err := os.Open(filepath.Join(dir, "proxy.pid"))
+	if err != nil {
+		return []string{fmt.Sprintf("pid unavailable: %v", err)}
+	}
+	body, readErr := io.ReadAll(io.LimitReader(file, 32))
+	file.Close()
+	pid, parseErr := strconv.Atoi(string(body))
+	if readErr != nil || parseErr != nil || pid <= 0 || len(body) == 32 {
+		return []string{"invalid pid in fixture marker"}
+	}
+	root := filepath.Join("/proc", strconv.Itoa(pid))
+	executable, exeErr := os.Readlink(filepath.Join(root, "exe"))
+	observations := []string{fmt.Sprintf("pid=%d exe=%q error=%v", pid, executable, exeErr)}
+	for _, name := range []string{"stat", "wchan"} {
+		file, err := os.Open(filepath.Join(root, name))
+		if err != nil {
+			observations = append(observations, fmt.Sprintf("%s unavailable: %v", name, err))
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(file, 4096))
+		file.Close()
+		observations = append(observations, fmt.Sprintf("%s=%q error=%v", name, body, readErr))
+	}
+	return observations
+}
+
 func proxySocket(t *testing.T, dir string) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join(dir, "proxy.socket"))
@@ -192,6 +269,64 @@ func proxySocket(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func TestKubectlStartupSamplerCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		started := time.Now()
+		result := sampleKubectlStartup(ctx, t.TempDir())
+		cancel()
+		if observations := <-result; len(observations) != 0 {
+			t.Fatalf("cancelled sampler performed observations: %v", observations)
+		}
+		if time.Since(started) != 0 {
+			t.Fatal("sampler waited for its timer after cancellation")
+		}
+	})
+}
+
+func TestKubectlStartupObservationsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	if observations := kubectlStartupObservations(dir, "darwin"); !strings.Contains(strings.Join(observations, " "), "unsupported") {
+		t.Fatalf("unsupported platform was not reported: %v", observations)
+	}
+	if observations := kubectlStartupObservations(dir, "linux"); !strings.Contains(strings.Join(observations, " "), "pid unavailable") {
+		t.Fatalf("missing pid was not reported: %v", observations)
+	}
+	for _, pid := range []string{"0", "../self", strings.Repeat("1", 64), "2147483647"} {
+		if err := os.WriteFile(filepath.Join(dir, "proxy.pid"), []byte(pid), 0600); err != nil {
+			t.Fatal(err)
+		}
+		observations := strings.Join(kubectlStartupObservations(dir, "linux"), " ")
+		if !strings.Contains(observations, "invalid pid") && !strings.Contains(observations, "no such file or directory") {
+			t.Fatalf("invalid or missing process not reported for %q: %s", pid, observations)
+		}
+	}
+}
+
+func TestKubectlStartupSamplerObservesProcess(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "proxy.pid"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		started := time.Now()
+		var observations []string
+		for sample := range sampleKubectlStartup(context.Background(), dir) {
+			observations = append(observations, sample...)
+		}
+		if len(observations) == 0 || time.Since(started) != time.Second {
+			t.Fatalf("missing delayed observation: elapsed=%s observations=%v", time.Since(started), observations)
+		}
+		if runtime.GOOS == "linux" {
+			for _, observation := range observations {
+				if !strings.Contains(observation, "error=<nil>") {
+					t.Fatalf("could not inspect live fixture process: %s", observation)
+				}
+			}
+		}
+	})
 }
 
 func assertProxyStopped(t *testing.T, dir string) {
