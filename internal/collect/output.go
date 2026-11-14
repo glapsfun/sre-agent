@@ -64,13 +64,17 @@ func (c *collection) acceptAudit(events []AuditEvent, phase, id string) bool {
 			valid = false
 			continue
 		}
-		proposed := append(append([]AuditEvent{}, c.result.Audit...), event)
-		raw, err := json.Marshal(proposed)
-		if err != nil || len(raw) > 1<<20 {
+		raw, err := json.Marshal(event)
+		proposedBytes := c.auditBytes + len(raw)
+		if len(c.result.Audit) > 0 {
+			proposedBytes++
+		}
+		if err != nil || proposedBytes+2 > 1<<20 {
 			valid = false
 			break
 		}
-		c.result.Audit = proposed
+		c.result.Audit = append(c.result.Audit, event)
+		c.auditBytes = proposedBytes
 	}
 	return valid
 }

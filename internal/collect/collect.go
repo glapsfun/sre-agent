@@ -27,6 +27,7 @@ type collection struct {
 	order      []string
 	redactor   safety.Redactor
 	result     Result
+	auditBytes int // Encoded accepted events and commas, excluding array brackets.
 	values     []Value
 	receipts   map[string]Activity
 	contextErr error

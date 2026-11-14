@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glapsfun/sre-agent/internal/safety"
 	"github.com/glapsfun/sre-agent/internal/sources"
 )
 
@@ -355,5 +356,226 @@ func TestRuntimeContractDoubleConcurrentCancellationReplaysSameOutcome(t *testin
 	result, err := (Service{Sources: f.service, Runtime: r}).Collect(context.Background(), root, req)
 	if !errors.Is(err, context.DeadlineExceeded) || len(result.Activity) != 1 {
 		t.Fatalf("cancellation %+v %v", result, err)
+	}
+}
+
+func smallAuditEvents(count int) []AuditEvent {
+	events := make([]AuditEvent, count)
+	for i := range events {
+		events[i] = AuditEvent{At: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), Permission: "net", Value: "host:443"}
+	}
+	return events
+}
+
+func auditBudgetTail(t *testing.T, prefix []AuditEvent, phase, id string, size int) []AuditEvent {
+	t.Helper()
+	event := smallAuditEvents(1)[0]
+	event.Phase, event.SourceID, event.Value = phase, id, ""
+	raw, err := json.Marshal(prefix)
+	if err != nil || len(prefix) == 0 {
+		t.Fatalf("invalid audit prefix: %v", err)
+	}
+	empty, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := size - len(raw) - len(empty) - 1
+	var tail []AuditEvent
+	for remaining > 2048 {
+		n := min(2048, remaining-len(empty)-1)
+		event.Value = strings.Repeat("x", n)
+		tail = append(tail, event)
+		remaining -= len(empty) + n + 1
+	}
+	if remaining < 0 {
+		t.Fatal("target cannot fit audit tail")
+	}
+	event.Value = strings.Repeat("x", remaining)
+	tail = append(tail, event)
+	want := append(append([]AuditEvent{}, prefix...), tail...)
+	raw, err = json.Marshal(want)
+	if err != nil || len(raw) != size {
+		t.Fatalf("audit fixture bytes=%d want=%d error=%v", len(raw), size, err)
+	}
+	return tail
+}
+
+func TestAuditAccumulationExactBudget(t *testing.T) {
+	for _, test := range []struct {
+		name, value, want string
+	}{
+		{"plain", "host:443", "host:443"},
+		{"escaped", `host\path"value`, `host\path"value`},
+		{"html", "<host>&value", "<host>&value"},
+		{"utf8", "界é\u2028\u2029", "界é\u2028\u2029"},
+		{"redacted", "private-value key=q", "[REDACTED] key=[REDACTED]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := collection{redactor: safety.NewRedactor("private-value", "q")}
+			if !c.acceptAudit(nil, "join", "") {
+				t.Fatal("initial empty audit rejected")
+			}
+			event := smallAuditEvents(1)[0]
+			event.Phase, event.SourceID, event.Value = "forged", "forged", test.value
+			if !c.acceptAudit([]AuditEvent{event}, "source", "a") {
+				t.Fatal("first source audit rejected")
+			}
+			first := event
+			first.Phase, first.SourceID, first.Value = "source", "a", test.want
+			event.At = time.Date(2026, 11, 14, 12, 0, 0, 123456789, time.FixedZone("offset", 5*3600+30*60))
+			if !c.acceptAudit([]AuditEvent{event}, "source", "b") || !c.acceptAudit([]AuditEvent{}, "source", "b") {
+				t.Fatal("second source or empty audit rejected")
+			}
+			second := event
+			second.Phase, second.SourceID, second.Value = "source", "b", test.want
+			prefix := []AuditEvent{first, second}
+			if !reflect.DeepEqual(c.result.Audit, prefix) {
+				t.Fatalf("attribution/redaction: got %+v want %+v", c.result.Audit, prefix)
+			}
+			last := smallAuditEvents(1)[0]
+			last.Phase = "join"
+			encodedLast, err := json.Marshal(last)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tail := auditBudgetTail(t, prefix, "join", "", (1<<20)-len(encodedLast)-1)
+			if !c.acceptAudit(tail, "join", "") {
+				t.Fatal("audit below exact limit rejected")
+			}
+			before, err := json.Marshal(c.result.Audit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			overflow := last
+			overflow.Value += "x"
+			if c.acceptAudit([]AuditEvent{overflow, last}, "join", "") {
+				t.Fatal("one-byte overflow accepted")
+			}
+			after, err := json.Marshal(c.result.Audit)
+			if err != nil || string(before) != string(after) {
+				t.Fatalf("overflow changed accepted prefix: %v", err)
+			}
+			if !c.acceptAudit(nil, "join", "") || !c.acceptAudit([]AuditEvent{last}, "join", "") {
+				t.Fatal("rejection or empty call spent/reset exact remaining budget")
+			}
+			want := append(append(prefix, tail...), last)
+			raw, err := json.Marshal(c.result.Audit)
+			if err != nil || !json.Valid(raw) || len(raw) != 1<<20 || !reflect.DeepEqual(c.result.Audit, want) {
+				t.Fatalf("exact audit bytes=%d events=%d want=%d error=%v", len(raw), len(c.result.Audit), len(want), err)
+			}
+			if !c.acceptAudit([]AuditEvent{}, "source", "c") || c.acceptAudit([]AuditEvent{last}, "source", "c") {
+				t.Fatal("full audit budget reset between calls")
+			}
+			after, err = json.Marshal(c.result.Audit)
+			if err != nil || string(raw) != string(after) {
+				t.Fatalf("full-budget rejection changed accepted prefix: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuditAccumulationInvalidEvents(t *testing.T) {
+	valid := smallAuditEvents(1)[0]
+	for _, test := range []struct {
+		name       string
+		at         time.Time
+		permission string
+		value      string
+	}{
+		{"zero time", time.Time{}, "net", "host:443"},
+		{"year zero", time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC), "net", "host:443"},
+		{"year overflow", time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), "net", "host:443"},
+		{"empty permission", valid.At, "", "host:443"},
+		{"long permission", valid.At, strings.Repeat("p", 65), "host:443"},
+		{"long value", valid.At, "net", strings.Repeat("v", 2049)},
+		{"control", valid.At, "net", "bad\nvalue"},
+		{"invalid utf8", valid.At, "net", string([]byte{0xff})},
+		{"redacted permission expansion", valid.At, strings.Repeat("q", 7), "host:443"},
+		{"redacted value expansion", valid.At, "net", strings.Repeat("q", 205)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := collection{redactor: safety.NewRedactor("q")}
+			invalid := AuditEvent{At: test.at, Permission: test.permission, Value: test.value}
+			if c.acceptAudit([]AuditEvent{valid, invalid, valid}, "source", "s") {
+				t.Fatal("invalid audit event accepted")
+			}
+			wantEvent := valid
+			wantEvent.Phase, wantEvent.SourceID = "source", "s"
+			want := []AuditEvent{wantEvent, wantEvent}
+			if !reflect.DeepEqual(c.result.Audit, want) {
+				t.Fatalf("invalid event did not preserve valid neighbors: %+v", c.result.Audit)
+			}
+			tail := auditBudgetTail(t, want, "join", "", 1<<20)
+			if !c.acceptAudit(tail, "join", "") {
+				t.Fatal("invalid event consumed audit budget")
+			}
+			raw, err := json.Marshal(c.result.Audit)
+			if err != nil || !json.Valid(raw) || len(raw) != 1<<20 {
+				t.Fatalf("retained audit bytes=%d error=%v", len(raw), err)
+			}
+		})
+	}
+}
+
+func TestAuditAccumulationEncodingErrorPreservesPrefix(t *testing.T) {
+	valid := smallAuditEvents(1)[0]
+	invalid := valid
+	invalid.At = time.Date(2026, 11, 14, 12, 0, 0, 0, time.FixedZone("invalid", 24*3600))
+	c := collection{}
+	if c.acceptAudit([]AuditEvent{valid, invalid, valid}, "source", "s") {
+		t.Fatal("unencodable audit time accepted")
+	}
+	want := valid
+	want.Phase, want.SourceID = "source", "s"
+	if !reflect.DeepEqual(c.result.Audit, []AuditEvent{want}) {
+		t.Fatalf("encoding error did not stop at accepted prefix: %+v", c.result.Audit)
+	}
+	tail := auditBudgetTail(t, []AuditEvent{want}, "join", "", 1<<20)
+	if !c.acceptAudit(nil, "join", "") || !c.acceptAudit(tail, "join", "") {
+		t.Fatal("encoding error consumed audit budget")
+	}
+	raw, err := json.Marshal(c.result.Audit)
+	if err != nil || !json.Valid(raw) || len(raw) != 1<<20 {
+		t.Fatalf("retained audit bytes=%d error=%v", len(raw), err)
+	}
+}
+
+func TestAuditAccumulationAllocations(t *testing.T) {
+	events := smallAuditEvents(512)
+	redactor := safety.NewRedactor()
+	var c collection
+	accepted := true
+	allocs := testing.AllocsPerRun(5, func() {
+		c = collection{redactor: redactor}
+		accepted = c.acceptAudit(events, "source", "s") && accepted
+	})
+	if !accepted || len(c.result.Audit) != len(events) {
+		t.Fatalf("accepted=%v retained=%d want=%d", accepted, len(c.result.Audit), len(events))
+	}
+	raw, err := json.Marshal(c.result.Audit)
+	if err != nil || !json.Valid(raw) || len(raw) > 1<<20 {
+		t.Fatalf("audit bytes=%d error=%v", len(raw), err)
+	}
+	t.Logf("512 audit events: %.0f allocations, %d encoded bytes", allocs, len(raw))
+	if allocs > 64*float64(len(events)) {
+		t.Fatalf("audit allocations %.0f exceed %d (64 per event)", allocs, 64*len(events))
+	}
+}
+
+func BenchmarkAuditAccumulation(b *testing.B) {
+	for _, count := range []int{128, 512} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			events := smallAuditEvents(count)
+			redactor := safety.NewRedactor()
+			var c collection
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				c = collection{redactor: redactor}
+				if !c.acceptAudit(events, "source", "s") || len(c.result.Audit) != count {
+					b.Fatal("audit events not retained")
+				}
+			}
+		})
 	}
 }
