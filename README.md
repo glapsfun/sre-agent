@@ -134,6 +134,53 @@ concise source evidence or explicit gaps. See the
 [source workflow](plugins/sre-agent/skills/sre-agent/references/approved-sources.md)
 for credentials, read-only access and the inventory format.
 
+Collect an approved plan into an existing run:
+
+```bash
+sre collect --plan plan.json --run checkout-run --id collection-1 --repo "$incident_repo"
+```
+
+For example, `plan.json` can select an already approved `metrics/query` tool:
+
+```json
+{"calls":[{"key":"queue","source_id":"metrics","tool":"query","arguments":{"query":"queue_depth"}}],"required":["queue"],"operation":"independent"}
+```
+
+Flags are `--plan FILE`, `--run ID`, `--id ID`, optional `--repo PATH`,
+`--mode auto|ordinary|code` (default `auto`), `--program FILE`,
+`--approve-code[=true|false]`, `--timeout DURATION` (default `10s`, maximum `60s`),
+and `--format json|text` (default `json`). IDs use letters, digits, `_` or `-`,
+up to 128 characters. Plan and UTF-8 program inputs are each limited to 64KiB;
+one input may use `-` for stdin. Plans allow at most 32 calls across eight sources,
+with `independent`, `filter`, or `join` operations. Source IDs and tool names must
+match saved read-only approvals; `required` lists keys whose evidence is needed.
+
+The production code runtime is currently unavailable. Ordinary mode never runs
+the supplied program. Auto uses ordinary calls for short or independent plans
+and falls back to ordinary calls when code prerequisites are unavailable.
+Manual code mode records its unavailable-selection reason, including missing
+program, consent, source grant, credentials, or runtime, and exits nonzero.
+`--approve-code` does not install or enable a runtime.
+
+Live results include untrusted-data boundaries, provenance, and explicit gaps.
+Required-key coverage does not establish factual correctness. After valid-input
+and existing-run preflight, collection stores a compact versioned receipt,
+including failures, rather than raw results, plan
+arguments, program source, or runtime audit. A matching run/entry ID replays the
+original outcome without contacting sources or runtime, even after approvals
+are removed. Changed inputs, mode, consent, or timeout conflict; default `auto`
+and `10s` match their explicit forms. Retain the input files to request replay.
+Receipt details may be omitted to fit storage, with an explicit gap. Output is
+limited to 2MiB including text indentation and newline; oversized live results
+are omitted with a nonzero exit while the committed receipt remains available.
+
+Collections hold `.sre-agent/collect.lock` until receipt persistence completes.
+A busy or stale lock requires operator inspection; it is never removed
+automatically. This lock excludes other `collect` commands, not arbitrary ledger
+writes. A crash between remote calls and commit leaves an uncertain outcome.
+After a write or output failure, inspect `sre run resume RUN_ID` and the reported
+entry ID before deciding whether to collect again. Do not repeat automatically.
+
 Use an explicit run ID when returning to an incident. Replace the temporary
 repository with the actual incident repository for real work. The main
 conversation records each observation, hypothesis, approval, action, and

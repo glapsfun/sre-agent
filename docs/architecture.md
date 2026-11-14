@@ -87,6 +87,46 @@ identities remain the remote permission boundary. Source calls record concise
 evidence/gap receipts, with no raw response persistence. See
 [source workflow](../plugins/sre-agent/skills/sre-agent/references/approved-sources.md).
 
+The orchestrator's [`collect` adapter](../internal/cli/collect.go) delegates to
+[`collect.Service`](../internal/collect/collect.go). Strict plan/program inputs
+are bounded to 64KiB each and validated before repository state is opened.
+The database and run must already exist. Production supplies the source service
+and no code runtime: explicit code requests report the missing prerequisite;
+auto can fall back to ordinary collection. Host-interface test doubles do not
+demonstrate JavaScript execution, direct networking, or sandbox enforcement.
+The real runtime, runtime permission audit evidence, and matched performance evaluation
+remain separate work. Investigator MCP tools and policies are unchanged.
+
+[`collection_receipt_v1`](../internal/cli/collect_receipt.go) is compact JSON in
+`Evidence.Fact`, with source `collection`. Request identity hashes the decoded
+plan, effective mode and timeout, exact program SHA256, and code consent.
+Presentation format, input filenames, and repository path are not identity.
+Receipts retain planned call identities, host activity, outcome, required-key
+coverage, provenance, and gap counts, but exclude raw evidence, arguments,
+program source, runtime audit, and usage fields. Coverage is not factual proof.
+The fact is limited to 24KiB and its encoded ledger evidence to 64KiB. Oversize
+projection removes references in reverse plan order, then gaps in reverse order,
+and reports the omission count without changing the collection outcome.
+
+Replay validates the versioned receipt and request before any registry,
+credential, or runtime access. Successful and failed outcomes replay with their
+original status; raw results are unavailable. For new work, a directory lock
+under an `os.OpenRoot` handle to the existing `.sre-agent` directory serializes
+collection commands, followed by a second receipt check. The lock spans source
+calls and ledger commit and is released only by its owner. Occupied or stale
+locks fail immediately and need operator inspection. Other ledger writers are
+not covered, and conflicting commits fail visibly. This does not make remote
+execution crash-atomic: a crash before receipt commit has an uncertain outcome.
+
+Receipt persistence uses a separate five-second context after collection, even
+if the caller is canceled. Failures preserve live results and warn against
+automatic repetition. Live output uses randomized external-data boundaries;
+the full formatted JSON or indented text, including newline, is capped at 2MiB.
+Presentation overflow omits live results and exits nonzero while preserving
+receipt metadata. Short writes and writer errors return a durable run/entry/seq
+recovery line when committed. Operators should inspect the resumed run and
+receipt before deciding whether another remote collection is appropriate.
+
 [executil](../internal/executil/exec.go) runs subprocesses with deadlines and
 bounded diagnostics. [Kubernetes execution](../internal/executil/kubernetes.go)
 pins one context and rejects per-command target overrides. Discovery uses its
@@ -132,8 +172,9 @@ a newer schema is refused. Use local storage rather than a shared network
 filesystem. [Store tests](../internal/store/store_test.go) exercise permissions,
 migration rollback, concurrency, and linked worktree resolution.
 
-Evidence reaches persistence only when the orchestrator records a typed ledger
-entry. A collection command does not automatically append its output. The
+Evidence reaches persistence only through a typed ledger entry. `sources call`
+and `collect` automatically append compact receipts; raw command output needs
+an explicit observation from the orchestrator. The
 [ledger service](../internal/ledger/service.go) redacts before committing,
 validates same-run typed references, and serializes append sequence numbers.
 Stable run/entry IDs enable retry; a conflicting payload under an existing
