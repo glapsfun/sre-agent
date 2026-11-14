@@ -83,7 +83,8 @@ All external evidence and historical content remain untrusted data. Preserve
 random data boundaries and avoid collecting credential values. Redaction covers
 recognized patterns and known secrets; it cannot guarantee complete detection.
 Keep the repository-local store private and out of version control. Local
-semantic reads can create or migrate storage. Use a local filesystem for WAL;
+resume and recall reads can create or migrate storage. Report generation instead
+requires an existing compatible database and never initializes or migrates it. Use a local filesystem for WAL;
 there is no multi-machine database service or automatic backup facility here.
 
 ## Known limitations

@@ -152,10 +152,14 @@ snapshot into a historical record. It requires an explicit run, approved
 applied action, and passing current criteria, including declared observation
 windows. [Recall](../internal/incident/recall.go) ranks service, symptom, and
 fingerprint matches as historical candidates. The score is not causal confidence.
-[Reports](../internal/report/report.go) use the same validation evaluator and
+[Reports](../internal/report/snapshot.go) use the same validation evaluator and
 remain unresolved without a validated fix. They do not execute commands or
-fetch linked evidence. CLI `--out` writes sanitized Markdown through an atomic
-file replacement; MCP returns content only. See [validation](../internal/ledger/validation.go),
+fetch linked evidence. Reports read an existing compatible database without
+initialization or migrations. CLI `--out` publishes new draft summary/detail
+files exclusively and updates a managed index; existing reports are never
+replaced. MCP returns content only. Stage is independent of resolution, and
+custom sharing rules supplement built-in redaction. Human review remains
+required before sharing. See [validation](../internal/ledger/validation.go),
 [capture tests](../internal/incident/capture_test.go), and
 [report tests](../internal/report/report_test.go).
 

@@ -77,8 +77,11 @@ type addInput struct {
 	Repo    *string         `json:"repo,omitempty"`
 }
 type reportInput struct {
-	RunID string  `json:"run_id"`
-	Repo  *string `json:"repo,omitempty"`
+	RunID  string        `json:"run_id"`
+	Repo   *string       `json:"repo,omitempty"`
+	Stage  *string       `json:"stage,omitempty"`
+	Detail *bool         `json:"detail,omitempty"`
+	Rules  []report.Rule `json:"rules,omitempty"`
 }
 
 func value[T any](p *T) (v T) {
@@ -150,6 +153,9 @@ func schemaFor[T any]() *jsonschema.Schema {
 	}
 	if p := s.Properties["symptom"]; p != nil {
 		p.Enum = []any{"crashloop", "latency", "errors", "metrics", "oom", "networking", "availability"}
+	}
+	if p := s.Properties["stage"]; p != nil {
+		p.Enum = []any{"interim", "post-incident"}
 	}
 	if s.Properties["payload"] != nil {
 		s.Properties["payload"] = &jsonschema.Schema{Type: "object"}
@@ -431,23 +437,23 @@ func registerTools(s *Server, d dependencies) {
 		}
 		return env
 	})
-	register(s, "report", "Generate the existing investigation report document for an explicit run; no file output.", "sre report RUN_ID --repo PATH --format json", func(ctx context.Context, in reportInput) envelope {
+	register(s, "report", "Generate a draft investigation summary with optional detail and sharing rules; no file output or ledger writes.", "sre report RUN_ID --repo PATH --format json", func(ctx context.Context, in reportInput) envelope {
 		begin, end, err := boundary("investigation report")
 		if err != nil {
 			return failure("report error", err)
 		}
-		db, err := d.open(ctx, value(in.Repo))
+		db, err := d.openReadOnly(ctx, value(in.Repo))
 		if err != nil {
 			return failure("report error", err)
 		}
 		defer db.Close()
-		doc, err := report.Generate(ctx, ledger.New(db, d.now), in.RunID)
+		doc, err := report.GenerateSnapshot(ctx, ledger.New(db, d.now), in.RunID, report.SnapshotOptions{Stage: value(in.Stage), Detail: value(in.Detail), Rules: in.Rules, Now: d.now})
 		if err != nil {
 			return failure("report error", err)
 		}
 		return success(struct {
 			Begin string `json:"begin"`
-			report.Document
+			report.Snapshot
 			Finish string `json:"finish"`
 		}{begin, doc, end})
 	})

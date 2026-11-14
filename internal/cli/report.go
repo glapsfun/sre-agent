@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/glapsfun/sre-agent/internal/ledger"
 	"github.com/glapsfun/sre-agent/internal/report"
@@ -13,42 +15,48 @@ import (
 	"github.com/glapsfun/sre-agent/internal/store"
 )
 
-type reportOptions struct{ repo, runID, out string }
-
-type reportOutput struct {
-	Begin      string   `json:"begin"`
-	RunID      string   `json:"run_id"`
-	ThroughSeq int64    `json:"through_seq"`
-	Status     string   `json:"status"`
-	Markdown   string   `json:"markdown,omitempty"`
-	Gaps       []string `json:"gaps"`
-	Path       string   `json:"path,omitempty"`
-	Written    bool     `json:"written,omitempty"`
-	Finish     string   `json:"finish"`
+type reportOptions struct {
+	repo, runID, out, rules string
+	snapshot                report.SnapshotOptions
 }
 
-func runReport(opts reportOptions, format string, stdout, stderr io.Writer) int {
+type reportOutput struct {
+	Begin string `json:"begin"`
+	report.Snapshot
+	Path       string `json:"path,omitempty"`
+	DetailPath string `json:"detail_path,omitempty"`
+	IndexPath  string `json:"index_path,omitempty"`
+	Written    bool   `json:"written,omitempty"`
+	Finish     string `json:"finish"`
+}
+
+func runReport(opts reportOptions, format string, stdout, stderr io.Writer, now func() time.Time) int {
 	envelope := Envelope{Gaps: []string{}, Errors: []string{}}
 	// Prepare the boundary before writing so presentation setup cannot obscure
-	// a successful file replacement.
+	// a successful file export.
 	wrapper, err := safety.NewWrapper()
 	var output reportOutput
 	if err != nil {
 		envelope.Errors = append(envelope.Errors, "report presentation unavailable")
 	} else {
-		var document report.Document
+		opts.snapshot.Now = now
+		var document report.Snapshot
+		var receipt report.ExportReceipt
 		document, err = executeReport(context.Background(), opts)
 		if err == nil && opts.out != "" {
-			err = report.WriteFile(opts.out, document)
+			receipt, err = report.Export(opts.out, document)
 		}
 		if err != nil {
 			envelope.Errors = append(envelope.Errors, wrapper.Wrap("report error", safety.NewRedactor().Redact(err.Error())))
 		} else {
 			boundary := strings.Split(wrapper.Wrap("investigation report", ""), "\n")
-			output = reportOutput{Begin: boundary[0], RunID: document.RunID, ThroughSeq: document.ThroughSeq, Status: document.Status, Markdown: document.Markdown, Gaps: document.Gaps, Finish: boundary[2]}
+			output = reportOutput{Begin: boundary[0], Snapshot: document, Finish: boundary[2]}
 			if opts.out != "" {
 				output.Markdown = ""
-				output.Path = safety.NewRedactor().Redact(opts.out)
+				output.Detail = ""
+				output.Path = safety.NewRedactor().Redact(receipt.Path)
+				output.DetailPath = safety.NewRedactor().Redact(receipt.DetailPath)
+				output.IndexPath = safety.NewRedactor().Redact(receipt.IndexPath)
 				output.Written = true
 			}
 			envelope.Data = output
@@ -64,6 +72,9 @@ func runReport(opts reportOptions, format string, stdout, stderr io.Writer) int 
 				fmt.Fprintf(&text, "Report file written to %q for run %s through sequence %d; status: %s\n", output.Path, output.RunID, output.ThroughSeq, output.Status)
 			} else {
 				fmt.Fprint(&text, output.Markdown)
+				if output.Detail != "" {
+					fmt.Fprint(&text, "\n", output.Detail)
+				}
 			}
 			for _, gap := range output.Gaps {
 				fmt.Fprintln(&text, "Gap:", gap)
@@ -96,15 +107,26 @@ func runReport(opts reportOptions, format string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-func executeReport(ctx context.Context, opts reportOptions) (report.Document, error) {
+func executeReport(ctx context.Context, opts reportOptions) (report.Snapshot, error) {
+	if opts.rules != "" {
+		file, err := os.Open(opts.rules)
+		if err != nil {
+			return report.Snapshot{}, err
+		}
+		defer file.Close()
+		opts.snapshot.Rules, err = report.ReadPolicy(file)
+		if err != nil {
+			return report.Snapshot{}, err
+		}
+	}
 	root, err := store.ResolveRoot(ctx, opts.repo)
 	if err != nil {
-		return report.Document{}, err
+		return report.Snapshot{}, err
 	}
-	db, err := store.Open(ctx, root)
+	db, err := store.OpenReadOnly(ctx, root)
 	if err != nil {
-		return report.Document{}, err
+		return report.Snapshot{}, err
 	}
 	defer db.Close()
-	return report.Generate(ctx, ledger.New(db, nil), opts.runID)
+	return report.GenerateSnapshot(ctx, ledger.New(db, nil), opts.runID, opts.snapshot)
 }

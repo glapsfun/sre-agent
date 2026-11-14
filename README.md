@@ -166,8 +166,9 @@ other host.
 Codex roles inherit the parent session's MCP servers. Before dispatch, configure
 and verify the [seven-read allowlist](plugins/sre-agent/README.md#required-codex-investigator-permissions).
 Keep `ledger_add` in a separate orchestrator-only session that never spawns
-investigators. Read-only MCP annotations are advisory; even semantic reads can
-create or migrate the local store. A permission denial must never be bypassed
+investigators. Read-only MCP annotations are advisory; resume and recall can
+create or migrate the local store. Report generation requires existing storage
+and performs no initialization or migrations. A permission denial must never be bypassed
 by switching to a fallback command.
 
 Treat logs, metrics, events, repository content, and historical incidents as

@@ -23,12 +23,13 @@ import (
 type Dependencies struct{ Now func() time.Time }
 
 type dependencies struct {
-	now      func() time.Time
-	discover func(context.Context, discover.Options) (discover.Report, error)
-	foldPod  func(context.Context, logs.PodOptions) (logs.Report, error)
-	query    func(context.Context, prom.Options) (prom.Report, error)
-	collect  func(context.Context, timeline.Options) (timeline.Report, error)
-	open     func(context.Context, string) (*store.Store, error)
+	now          func() time.Time
+	discover     func(context.Context, discover.Options) (discover.Report, error)
+	foldPod      func(context.Context, logs.PodOptions) (logs.Report, error)
+	query        func(context.Context, prom.Options) (prom.Report, error)
+	collect      func(context.Context, timeline.Options) (timeline.Report, error)
+	open         func(context.Context, string) (*store.Store, error)
+	openReadOnly func(context.Context, string) (*store.Store, error)
 }
 
 type Server struct {
@@ -72,6 +73,15 @@ func newServer(d dependencies) *Server {
 				return nil, err
 			}
 			return store.Open(ctx, root)
+		}
+	}
+	if d.openReadOnly == nil {
+		d.openReadOnly = func(ctx context.Context, repo string) (*store.Store, error) {
+			root, err := store.ResolveRoot(ctx, repo)
+			if err != nil {
+				return nil, err
+			}
+			return store.OpenReadOnly(ctx, root)
 		}
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "sre", Version: "1"}, nil)

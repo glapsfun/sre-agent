@@ -76,7 +76,7 @@ func runWithInputAt(args []string, stdin io.Reader, stdout, stderr io.Writer, di
 		} else if command == "incident add" || command == "recall" {
 			return runIncident(command, opts.incident, format, stdout, stderr)
 		} else if command == "report" {
-			return runReport(opts.report, format, stdout, stderr)
+			return runReport(opts.report, format, stdout, stderr, now)
 		} else if isLedgerCommand(command) {
 			return runLedgerWithViewAt(command, opts.ledger, format, stdin, stdout, stderr, loadLedgerView, now)
 		} else if command == "timeline" {
@@ -218,11 +218,11 @@ func parse(args []string) (string, string, commandOptions, error) {
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset", "--slowest", "--blocked", "--by-investigator", "--service", "--symptom", "--fingerprint", "--out":
+		case "--format", "--context", "--only", "--timeout", "--max-patterns", "--pod", "--namespace", "--container", "--previous", "--since", "--url", "--range", "--step", "--top", "--workload", "--repo", "--alertmanager-url", "--id", "--session-id", "--run", "--file", "--offset", "--slowest", "--blocked", "--by-investigator", "--service", "--symptom", "--fingerprint", "--out", "--stage", "--detail", "--rules":
 		default:
 			return invalid("unknown flag; usage: sre version|discover|logs fold|prom query '<PromQL>'|timeline|run|ledger|incident add|recall|report RUN_ID [--format json|text]")
 		}
-		if (name == "--previous" || name == "--blocked" || name == "--by-investigator") && !hasValue {
+		if (name == "--previous" || name == "--blocked" || name == "--by-investigator" || name == "--detail") && !hasValue {
 			value, hasValue = "true", true
 		}
 		if !hasValue {
@@ -235,6 +235,25 @@ func parse(args []string) (string, string, commandOptions, error) {
 		switch name {
 		case "--format":
 			format = value
+		case "--stage":
+			reportFlag = true
+			if value != "interim" && value != "post-incident" {
+				return invalid("--stage requires interim or post-incident")
+			}
+			opts.report.snapshot.Stage = value
+		case "--detail":
+			reportFlag = true
+			detail, err := strconv.ParseBool(value)
+			if err != nil {
+				return invalid("--detail requires true or false")
+			}
+			opts.report.snapshot.Detail = detail
+		case "--rules":
+			reportFlag = true
+			if strings.TrimSpace(value) == "" {
+				return invalid("--rules requires a file")
+			}
+			opts.report.rules = value
 		case "--out":
 			reportFlag = true
 			if strings.TrimSpace(value) == "" {
@@ -396,7 +415,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 	}
 	if len(positional) > 0 && positional[0] == "report" {
 		if len(positional) != 2 || strings.TrimSpace(positional[1]) == "" {
-			return invalid("usage: sre report RUN_ID [--out FILE] [--repo PATH] [--format json|text]")
+			return invalid("usage: sre report RUN_ID [--stage interim|post-incident] [--detail] [--rules FILE] [--out FILE] [--repo PATH] [--format json|text]")
 		}
 		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag || topFlag || incidentFlag || timelineFlag || namespaceFlag || sinceFlag || processLogFlag || len(ledgerFlags) > 0 {
 			return invalid("command flags do not apply to report")
@@ -405,7 +424,7 @@ func parse(args []string) (string, string, commandOptions, error) {
 		return format, "report", opts, nil
 	}
 	if reportFlag {
-		return invalid("--out requires report")
+		return invalid("--out, --stage, --detail and --rules require report")
 	}
 	if command == "incident add" || command == "recall" {
 		if discoveryFlag || logFlag || podFlag || contextFlag || promFlag || timeoutFlag || timelineFlag || namespaceFlag || sinceFlag || processLogFlag {
