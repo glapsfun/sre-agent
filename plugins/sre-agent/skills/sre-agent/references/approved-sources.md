@@ -86,3 +86,37 @@ If recording fails after collection, retain returned evidence, resolve storage
 access and record it separately. Do not claim durability or automatically repeat
 collection. Output failure after commit identifies the run to resume. Approval
 output failure calls for `sources list` to inspect the saved selections.
+
+## Optional UTCP HTTP sources
+
+Use kind `utcp-http` in the explicit known inventory, with `endpoint` pointing
+to its UTCP 1.1 manual. Scout, selected approval and call commands stay the same.
+The adapter supports native HTTP GET tools, not CLI processes or automatic
+OpenAPI conversion. Tool URLs must share the manual's scheme, host and port;
+redirects and non-GET methods are rejected. The default client uses fresh
+HTTP/1 connections to prevent automatic transport retries. A GET method still requires a
+provider-enforced read-only access policy before approval.
+
+Manuals describe tool `name`, object `inputs` and `tool_call_template`. Selected
+digests pin both schema and executable template. A URL, method, authentication
+template or schema change therefore needs new approval. Descriptions and schema
+examples/defaults are never saved as instructions or credentials.
+
+Supported arguments are strings, booleans and finite numbers. Path placeholders
+are encoded as single segments; remaining values become query parameters.
+Objects, arrays, nulls, traversal and a `body` argument fail explicitly. Object
+properties, required fields, additionalProperties, string length/pattern and
+string/boolean enum/const are supported. Remote schema references and unsupported
+constraints fail visibly; do not assume the adapter implements every JSON Schema
+feature. Numeric bounds and numeric enum/const require a future compatible
+extension rather than approximate float comparisons.
+
+Authentication is absent or an `api_key` template naming the approved variable
+as `Bearer ${VARIABLE}`, with `var_name: Authorization` and `location: header`.
+Inline credentials, other variables, custom headers, OAuth, basic and query/cookie
+authentication are unsupported. No credential is sent to a different origin.
+Partial inventories retain valid tools and describe unsupported ones as gaps.
+
+The concrete [Prometheus integration and comparison](../../../../../docs/utcp-http-comparison.md)
+shows a manual and reproducible local evaluation. UTCP does not inherently prove
+lower model token use or faster production calls.

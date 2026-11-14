@@ -82,7 +82,7 @@ func ValidateSource(source Source) error {
 		return errInvalidSource
 	}
 	switch source.Kind {
-	case "mcp-http":
+	case "mcp-http", "utcp-http":
 		if !validEndpoint(source.Endpoint) || (source.CredentialEnv != "" && !environmentPattern.MatchString(source.CredentialEnv)) {
 			return errInvalidSource
 		}
@@ -135,7 +135,7 @@ func validateApproval(source Source) error {
 	if err := ValidateSource(source); err != nil {
 		return err
 	}
-	if source.Kind == "mcp-http" && strings.TrimSpace(source.AccessRef) == "" {
+	if (source.Kind == "mcp-http" || source.Kind == "utcp-http") && strings.TrimSpace(source.AccessRef) == "" {
 		return errors.New("HTTP source approval requires a read-only access reference")
 	}
 	for _, tool := range source.Tools {

@@ -107,8 +107,16 @@ func (s Service) Scout(ctx context.Context, root string, opts ScoutOptions) (Sco
 		gap("", "approved registry unavailable", "Saved credential approvals cannot be used.")
 	}
 	credentials := map[string]string{}
+	utcpCredentials := map[string]string{}
 	if err == nil {
 		for _, approved := range registry.Sources {
+			if approved.Kind == "utcp-http" {
+				if prior, ok := utcpCredentials[approved.Endpoint]; ok && prior != approved.CredentialEnv {
+					utcpCredentials[approved.Endpoint] = ""
+				} else if !ok {
+					utcpCredentials[approved.Endpoint] = approved.CredentialEnv
+				}
+			}
 			if approved.Kind == "mcp-http" {
 				if prior, ok := credentials[approved.Endpoint]; ok && prior != approved.CredentialEnv {
 					credentials[approved.Endpoint] = ""
@@ -116,6 +124,11 @@ func (s Service) Scout(ctx context.Context, root string, opts ScoutOptions) (Sco
 					credentials[approved.Endpoint] = approved.CredentialEnv
 				}
 			}
+		}
+	}
+	for i := range known {
+		if known[i].Kind == "utcp-http" && known[i].CredentialEnv == "" {
+			known[i].CredentialEnv = utcpCredentials[known[i].Endpoint]
 		}
 	}
 	all := append([]Source{}, known...)
@@ -207,6 +220,27 @@ func (s Service) Scout(ctx context.Context, root string, opts ScoutOptions) (Sco
 		}
 		src.Tools = []Tool{}
 		candidate := Candidate{Source: src, Status: "integration-needed"}
+		if src.Kind == "utcp-http" {
+			credential, err := s.utcpCredential(src)
+			if err != nil {
+				candidate.Status = "unavailable"
+				gap(src.ID, "source tool inventory unavailable", "This source cannot support the investigation.")
+			} else {
+				tools, partial, err := s.utcpManual(ctx, src, credential)
+				if err != nil {
+					candidate.Status = "unavailable"
+					gap(src.ID, "source tool inventory unavailable", "This source cannot support the investigation.")
+				} else {
+					candidate.Status = "ready"
+					for _, tool := range tools {
+						candidate.Tools = append(candidate.Tools, tool.descriptor)
+					}
+					if partial {
+						gap(src.ID, "some UTCP tools are unsupported", "Only supported HTTP GET tools are available for review.")
+					}
+				}
+			}
+		}
 		if src.Kind == "mcp-http" {
 			_, tools, cleanup, err := s.openSession(ctx, src)
 			if err != nil {

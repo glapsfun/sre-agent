@@ -99,7 +99,7 @@ func (s Service) Call(ctx context.Context, root string, opts CallOptions) (CallR
 	if result.Reference == "" {
 		result.Reference = source.Endpoint
 	}
-	if source.Kind != "mcp-http" {
+	if source.Kind != "mcp-http" && source.Kind != "utcp-http" {
 		return fail("source integration needed", "This reference-only source requires an integration before evidence can be collected.")
 	}
 	var selected *Tool
@@ -111,6 +111,9 @@ func (s Service) Call(ctx context.Context, root string, opts CallOptions) (CallR
 	}
 	if selected == nil {
 		return fail("tool is not approved for read-only collection", "Source evidence was not collected; explicit read-only tool approval is required.")
+	}
+	if source.Kind == "utcp-http" {
+		return s.callUTCP(ctx, *source, *selected, arguments, result)
 	}
 	lookup := s.LookupEnv
 	if lookup == nil {
