@@ -77,6 +77,129 @@ func TestSourcesCLIApprovalIsExplicitAndStrict(t *testing.T) {
 	}
 }
 
+const codeNetworkSelection = `{"sources":[{"id":"metrics","name":"Metrics","kind":"mcp-http","endpoint":"https://MeTrIcS.Example/mcp","credential_env":"METRICS_TOKEN","access_ref":"policy/metrics-reader","tools":[],"code_network":{"host_port":"metrics.example:443","access_ref":"policy/read-only and no anonymous writes"}}]}`
+
+func TestSourcesCLICodeNetworkConsentBeforeRootResolution(t *testing.T) {
+	ordinary := strings.Replace(codeNetworkSelection, `,"code_network":{"host_port":"metrics.example:443","access_ref":"policy/read-only and no anonymous writes"}`, "", 1)
+	for _, tt := range []struct {
+		name, input, diagnostic string
+		flags                   []string
+	}{
+		{"neither consent", codeNetworkSelection, sources.ErrApprovalRequired.Error(), nil},
+		{"ordinary absent", codeNetworkSelection, sources.ErrApprovalRequired.Error(), []string{"--approve-code-network"}},
+		{"ordinary false", codeNetworkSelection, sources.ErrApprovalRequired.Error(), []string{"--approve=false", "--approve-code-network"}},
+		{"network absent", codeNetworkSelection, sources.ErrCodeNetworkApprovalRequired.Error(), []string{"--approve"}},
+		{"network false", codeNetworkSelection, sources.ErrCodeNetworkApprovalRequired.Error(), []string{"--approve", "--approve-code-network=false"}},
+		{"flag without grant", ordinary, "code network approval requires a selected code network grant", []string{"--approve", "--approve-code-network"}},
+		{"null with flag", strings.Replace(codeNetworkSelection, `{"host_port":"metrics.example:443","access_ref":"policy/read-only and no anonymous writes"}`, "null", 1), "code network approval requires a selected code network grant", []string{"--approve", "--approve-code-network"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			root := filepath.Join(parent, "missing")
+			args := append([]string{"approve", "--file", "-"}, tt.flags...)
+			code, env, raw := sourceCLI(t, root, tt.input, args...)
+			if code == 0 || len(env.Errors) != 1 || env.Errors[0] != tt.diagnostic {
+				t.Fatalf("root resolution preceded consent: %s", raw)
+			}
+			entries, err := os.ReadDir(parent)
+			if err != nil || len(entries) != 0 {
+				t.Fatal("created state before consent", entries, err)
+			}
+		})
+	}
+	root := ledgerRepo(t)
+	if err := os.Mkdir(filepath.Join(root, sources.RegistryFilename), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if code, env, raw := sourceCLI(t, root, codeNetworkSelection, "approve", "--approve", "--file", "-"); code == 0 || len(env.Errors) != 1 || env.Errors[0] != sources.ErrCodeNetworkApprovalRequired.Error() {
+		t.Fatalf("unreadable registry preceded consent: %s", raw)
+	}
+}
+
+func TestSourcesCLICodeNetworkFlagScope(t *testing.T) {
+	for _, args := range [][]string{
+		{"list", "--approve-code-network"},
+		{"list", "--approve-code-network=false"},
+		{"scout", "--approve-scout", "--approve-code-network"},
+		{"call", "metrics", "query", "--args", "-", "--run", "run", "--id", "entry", "--approve-code-network"},
+		{"approve", "--file", "-", "--approve", "--approve-code-network", "--approve-code-network=false"},
+		{"approve", "--file", "-", "--approve", "--approve-code-network=invalid"},
+	} {
+		if _, err := parseSources(args); err == nil {
+			t.Fatalf("accepted invalid flag usage: %v", args)
+		}
+	}
+}
+
+func TestSourcesCLICodeNetworkSavedReplayAndRemoval(t *testing.T) {
+	root := ledgerRepo(t)
+	path := filepath.Join(root, sources.RegistryFilename)
+	approve := func(input string, flags ...string) sources.Registry {
+		t.Helper()
+		args := append([]string{"approve", "--approve", "--file", "-"}, flags...)
+		if code, _, raw := sourceCLI(t, root, input, args...); code != 0 || !strings.Contains(raw, `"saved":true`) {
+			t.Fatal("approval failed", raw)
+		}
+		loaded, err := sources.Load(t.Context(), root)
+		if err != nil || len(loaded.Sources) != 1 {
+			t.Fatal("registry not saved", loaded, err)
+		}
+		return loaded
+	}
+	first := approve(codeNetworkSelection, "--approve-code-network")
+	got := first.Sources[0]
+	if got.ID != "metrics" || got.Endpoint != "https://MeTrIcS.Example/mcp" || got.CredentialEnv != "METRICS_TOKEN" || got.AccessRef != "policy/metrics-reader" || got.CodeNetwork == nil || got.CodeNetwork.HostPort != "metrics.example:443" || got.CodeNetwork.AccessRef != "policy/read-only and no anonymous writes" {
+		t.Fatalf("wrong saved descriptor: %+v", got)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, raw := sourceCLI(t, root, codeNetworkSelection, "approve", "--approve", "--file", "-"); code == 0 {
+		t.Fatal("replay lacked special consent", raw)
+	}
+	replay := approve(codeNetworkSelection, "--approve-code-network=true")
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) || !first.Sources[0].ApprovedAt.Equal(replay.Sources[0].ApprovedAt) {
+		t.Fatal("replay rewrote registry", err)
+	}
+	code, _, raw := sourceCLI(t, root, "", "list")
+	var listed struct {
+		Data struct {
+			Result struct {
+				Registry sources.Registry `json:"registry"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &listed); err != nil || code != 0 || len(listed.Data.Result.Registry.Sources) != 1 || listed.Data.Result.Registry.Sources[0].CodeNetwork == nil || *listed.Data.Result.Registry.Sources[0].CodeNetwork != *got.CodeNetwork {
+		t.Fatal("list lost saved grant", raw, err)
+	}
+	for _, replacement := range []string{
+		strings.Replace(codeNetworkSelection, `,"code_network":{"host_port":"metrics.example:443","access_ref":"policy/read-only and no anonymous writes"}`, "", 1),
+		strings.Replace(codeNetworkSelection, `{"host_port":"metrics.example:443","access_ref":"policy/read-only and no anonymous writes"}`, "null", 1),
+	} {
+		approve(codeNetworkSelection, "--approve-code-network")
+		removed := approve(replacement, "--approve-code-network=false")
+		if removed.Sources[0].CodeNetwork != nil {
+			t.Fatal("ordinary replacement retained saved grant")
+		}
+	}
+	inputPath := filepath.Join(t.TempDir(), "selected.json")
+	if err := os.WriteFile(inputPath, []byte(codeNetworkSelection), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, raw := sourceCLI(t, root, "unread stdin", "approve", "--approve", "--approve-code-network", "--file", inputPath); code != 0 {
+		t.Fatal("explicit file approval failed", raw)
+	}
+	loaded, err := sources.Load(t.Context(), root)
+	if err != nil || len(loaded.Sources) != 1 || loaded.Sources[0].CodeNetwork == nil || *loaded.Sources[0].CodeNetwork != *got.CodeNetwork {
+		t.Fatal("file input saved wrong grant", loaded, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".sre-agent")); !os.IsNotExist(err) {
+		t.Fatal("approval initialized ledger", err)
+	}
+}
+
 func TestSourcesCLICallRecordsSuccessAndFailureGaps(t *testing.T) {
 	root := ledgerRepo(t)
 	ledgerData(t, root, "", "run", "start", "incident", "--id", "run")

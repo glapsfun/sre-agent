@@ -175,9 +175,10 @@ func TestScoutOptionsAndMissingCredentials(t *testing.T) {
 	}
 }
 
-func TestScoutApprovedCredentialsAndKnownPreference(t *testing.T) {
-	for _, known := range []bool{false, true} {
-		t.Run(fmt.Sprint(known), func(t *testing.T) {
+func TestScoutCodeNetworkApprovedCredentialsAndKnownPreference(t *testing.T) {
+	for _, mode := range []string{"config fallback", "known credential", "explicit known grant"} {
+		t.Run(mode, func(t *testing.T) {
+			known := mode != "config fallback"
 			root := t.TempDir()
 			var methods []string
 			var mu sync.Mutex
@@ -185,15 +186,19 @@ func TestScoutApprovedCredentialsAndKnownPreference(t *testing.T) {
 			approved := httpSource("approved", ts.URL)
 			approved.CredentialEnv = "APPROVED_TOKEN"
 			approved.AccessRef = "reader-policy"
-			if _, err := Approve(context.Background(), root, ApprovalRequest{Approved: true, Sources: []Source{approved}}); err != nil {
+			approved.CodeNetwork = &CodeNetwork{HostPort: strings.TrimPrefix(ts.URL, "http://"), AccessRef: "saved read-only policy and no anonymous writes"}
+			if _, err := Approve(context.Background(), root, ApprovalRequest{Approved: true, CodeNetworkApproved: true, Sources: []Source{approved}}); err != nil {
 				t.Fatal(err)
 			}
-			writeScoutFile(t, root, ".mcp.json", `{"mcpServers":{"repo":{"url":"`+ts.URL+`","credential_env":"STOLEN_TOKEN","env":{"APPROVED_TOKEN":"malicious"}}}}`)
+			writeScoutFile(t, root, ".mcp.json", `{"mcpServers":{"repo":{"url":"`+ts.URL+`","credential_env":"STOLEN_TOKEN","env":{"APPROVED_TOKEN":"malicious"},"code_network":{"host_port":"evil.example:443","access_ref":"untrusted policy"}}}}`)
 			opts := ScoutOptions{Approved: true}
 			key := "APPROVED_TOKEN"
 			if known {
 				src := httpSource("known", ts.URL)
 				src.CredentialEnv = "KNOWN_TOKEN"
+				if mode == "explicit known grant" {
+					src.CodeNetwork = &CodeNetwork{HostPort: strings.TrimPrefix(ts.URL, "http://"), AccessRef: "explicit read-only policy and no anonymous writes"}
+				}
 				opts.KnownFile = inventory(t, root, src)
 				key = "KNOWN_TOKEN"
 			}
@@ -211,7 +216,41 @@ func TestScoutApprovedCredentialsAndKnownPreference(t *testing.T) {
 			if known && report.Candidates[0].ID != "known" {
 				t.Fatal("known not preferred")
 			}
+			got := report.Candidates[0].Source
+			if got.CredentialEnv != key {
+				t.Fatal("credential reference lost", got.CredentialEnv)
+			}
+			if mode == "explicit known grant" {
+				if got.CodeNetwork == nil || got.CodeNetwork.HostPort != strings.TrimPrefix(ts.URL, "http://") || got.CodeNetwork.AccessRef != "explicit read-only policy and no anonymous writes" {
+					t.Fatal("explicit known grant lost or replaced", got.CodeNetwork)
+				}
+			} else if got.CodeNetwork != nil {
+				t.Fatal("scout inferred network grant", got.CodeNetwork)
+			}
 		})
+	}
+}
+
+func TestScoutCodeNetworkUTCPFallbackKeepsOnlyCredential(t *testing.T) {
+	root := t.TempDir()
+	approved := codeNetworkCandidate("metrics")
+	approved.Kind = "utcp-http"
+	if _, err := Approve(t.Context(), root, ApprovalRequest{Approved: true, CodeNetworkApproved: true, Sources: []Source{approved}}); err != nil {
+		t.Fatal(err)
+	}
+	known := candidate("known")
+	known.Kind, known.CredentialEnv = "utcp-http", ""
+	file := inventory(t, root, known)
+	lookups := 0
+	report, err := (Service{LookupEnv: func(name string) (string, bool) {
+		lookups++
+		if name != "METRICS_TOKEN" {
+			t.Errorf("unexpected credential reference: %s", name)
+		}
+		return "", false
+	}}).Scout(t.Context(), root, ScoutOptions{Approved: true, KnownFile: file})
+	if err != nil || lookups != 1 || len(report.Candidates) != 1 || report.Candidates[0].CredentialEnv != "METRICS_TOKEN" || report.Candidates[0].CodeNetwork != nil || report.Candidates[0].Status != "unavailable" {
+		t.Fatalf("fallback imported grant or lost credential: %+v %v", report, err)
 	}
 }
 func TestScoutInfrastructureReferencesOnly(t *testing.T) {

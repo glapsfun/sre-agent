@@ -56,6 +56,55 @@ explicit approval again. Unknown fields and duplicate keys fail. A busy/stale
 `.sre-sources.lock` requires inspection, never automatic removal. There is no
 deletion command. Review registry metadata before committing it.
 
+## Optional Code Mode network authorization
+
+Code Mode execution is not yet implemented. This optional record saves a
+permission prerequisite only; it does not enable a runner or broaden ordinary
+`sources call` access beyond its approved endpoint and tools.
+
+To request separate host:port authorization, add `code_network` to an explicit
+selected `mcp-http` or `utcp-http` descriptor with a valid, nonempty
+`credential_env`. For an endpoint such as `https://metrics.example/mcp`, the
+additional member is:
+
+```json
+"code_network": {
+  "host_port": "metrics.example:443",
+  "access_ref": "policy/read-only-and-no-anonymous-writes"
+}
+```
+
+`host_port` must exactly match the endpoint's canonical destination: lowercase
+ASCII DNS name or canonical IP literal, brackets for IPv6, and an explicit
+decimal port. HTTPS defaults to 443 and loopback HTTP to 80. IPv4-mapped IPv6
+remains IPv6. Wildcards, zones, trailing dots, Unicode hostnames, legacy numeric
+address aliases, paths, queries and other destinations are rejected. These
+stricter hostname rules apply only when requesting this grant.
+
+The grant's nonsecret `access_ref`, at most 512 bytes, attests that the provider
+enforces a read-only identity and that unauthenticated access at this host:port
+cannot mutate infrastructure across protocols. It is operator policy attestation,
+not verified IAM. The source's own `access_ref` and read-only tool checks still
+apply; a future runner must also enforce its runtime and per-run prerequisites.
+
+Present the wider scope and obtain both approvals before saving it:
+
+```bash
+sre sources approve --approve --approve-code-network --file selected-sources.json --repo <repository>
+```
+
+Both flags are required for every selected grant, including replay and updates.
+`--approve-code-network` alone does not derive a grant, and true consent without
+a selected grant fails. Missing consent fails before repository access. Ordinary
+approvals need only `--approve`. Each selected source is a full replacement:
+omitting `code_network` or setting it to `null` removes its previous grant during
+ordinary reapproval. Unselected sources retain their grants. Grant changes update
+approval timestamps; identical consented replay preserves bytes and timestamps.
+
+`sources list` exposes saved grants. Scout can carry a grant from explicit known
+inventory, but never infers one from saved credential fallback, remote manuals,
+repository configuration or environment discovery. A candidate is not approval.
+
 ## Collection and receipts
 
 ```bash

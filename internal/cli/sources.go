@@ -22,7 +22,7 @@ import (
 
 type sourceOptions struct {
 	command, repo, format, file, known, args, run, id, source, tool, context string
-	approve, scout                                                           bool
+	approve, approveCodeNetwork, scout                                       bool
 	timeout                                                                  time.Duration
 }
 
@@ -42,7 +42,7 @@ func parseSources(args []string) (sourceOptions, error) {
 		}
 		flags[name] = true
 		switch name {
-		case "--approve", "--approve-scout":
+		case "--approve", "--approve-code-network", "--approve-scout":
 			if !has {
 				value = "true"
 				has = true
@@ -84,13 +84,15 @@ func parseSources(args []string) (sourceOptions, error) {
 				return opts, errors.New("source timeout must be positive and at most 60s")
 			}
 			opts.timeout = v
-		case "--approve", "--approve-scout":
+		case "--approve", "--approve-code-network", "--approve-scout":
 			v, err := strconv.ParseBool(value)
 			if err != nil {
 				return opts, errors.New("source approval must be true or false")
 			}
 			if name == "--approve" {
 				opts.approve = v
+			} else if name == "--approve-code-network" {
+				opts.approveCodeNetwork = v
 			} else {
 				opts.scout = v
 			}
@@ -110,6 +112,7 @@ func parseSources(args []string) (sourceOptions, error) {
 		}
 	case "approve":
 		allowed["--approve"], allowed["--file"] = true, true
+		allowed["--approve-code-network"] = true
 		if opts.file == "" {
 			return opts, errors.New("source approval requires --file")
 		}
@@ -203,6 +206,21 @@ func executeSources(ctx context.Context, opts sourceOptions, stdin io.Reader, se
 	if opts.command == "scout" && !opts.scout || opts.command == "approve" && !opts.approve {
 		return out, gaps, sources.ErrApprovalRequired
 	}
+	var approval sources.ApprovalRequest
+	if opts.command == "approve" {
+		raw, err := readSourceInput(opts.file, stdin, 1<<20)
+		if err != nil {
+			return out, gaps, err
+		}
+		selected, err := sources.DecodeSelection(raw)
+		if err != nil {
+			return out, gaps, err
+		}
+		approval = sources.ApprovalRequest{Approved: opts.approve, CodeNetworkApproved: opts.approveCodeNetwork, Sources: selected}
+		if err := sources.ValidateApprovalRequest(approval); err != nil {
+			return out, gaps, err
+		}
+	}
 	root, err := store.ResolveRoot(ctx, opts.repo)
 	if err != nil {
 		return out, gaps, err
@@ -230,15 +248,7 @@ func executeSources(ctx context.Context, opts sourceOptions, stdin io.Reader, se
 		}
 		return out, gaps, scoutErr
 	case "approve":
-		raw, readErr := readSourceInput(opts.file, stdin, 1<<20)
-		if readErr != nil {
-			return out, gaps, readErr
-		}
-		selected, decodeErr := sources.DecodeSelection(raw)
-		if decodeErr != nil {
-			return out, gaps, decodeErr
-		}
-		registry, approveErr := sources.Approve(ctx, root, sources.ApprovalRequest{Approved: opts.approve, Sources: selected})
+		registry, approveErr := sources.Approve(ctx, root, approval)
 		out.Result = registry
 		out.Saved = approveErr == nil
 		return out, gaps, approveErr

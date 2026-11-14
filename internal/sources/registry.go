@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"reflect"
@@ -25,9 +26,10 @@ import (
 const RegistryFilename = ".sre-sources.json"
 
 var (
-	ErrNoRegistry       = errors.New("no approved source registry")
-	ErrApprovalRequired = errors.New("explicit approval and selected sources required")
-	ErrBusy             = errors.New("source registry busy: active or stale lock requires inspection")
+	ErrNoRegistry                  = errors.New("no approved source registry")
+	ErrApprovalRequired            = errors.New("explicit approval and selected sources required")
+	ErrCodeNetworkApprovalRequired = errors.New("explicit code network approval required")
+	ErrBusy                        = errors.New("source registry busy: active or stale lock requires inspection")
 )
 
 type Tool struct {
@@ -36,15 +38,21 @@ type Tool struct {
 	ReadOnly     bool   `json:"read_only"`
 }
 
+type CodeNetwork struct {
+	HostPort  string `json:"host_port"`
+	AccessRef string `json:"access_ref"`
+}
+
 type Source struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Kind          string `json:"kind"`
-	Endpoint      string `json:"endpoint,omitempty"`
-	CredentialEnv string `json:"credential_env,omitempty"`
-	AccessRef     string `json:"access_ref,omitempty"`
-	Reference     string `json:"reference,omitempty"`
-	Tools         []Tool `json:"tools"`
+	ID            string       `json:"id"`
+	Name          string       `json:"name"`
+	Kind          string       `json:"kind"`
+	Endpoint      string       `json:"endpoint,omitempty"`
+	CredentialEnv string       `json:"credential_env,omitempty"`
+	AccessRef     string       `json:"access_ref,omitempty"`
+	Reference     string       `json:"reference,omitempty"`
+	Tools         []Tool       `json:"tools"`
+	CodeNetwork   *CodeNetwork `json:"code_network,omitempty"`
 }
 
 type ApprovedSource struct {
@@ -58,8 +66,9 @@ type Registry struct {
 }
 
 type ApprovalRequest struct {
-	Approved bool
-	Sources  []Source
+	Approved            bool
+	CodeNetworkApproved bool
+	Sources             []Source
 }
 
 const (
@@ -71,6 +80,8 @@ var (
 	identifierPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 	environmentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	dnsLabelPattern    = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+	addressPartPattern = regexp.MustCompile(`^(?:[0-9]+|0[xX][0-9a-fA-F]+)$`)
 	errInvalidSource   = errors.New("invalid or unsafe source descriptor")
 	errInvalidRegistry = errors.New("invalid approved source registry")
 	errStorage         = errors.New("source registry storage operation failed")
@@ -92,6 +103,15 @@ func ValidateSource(source Source) error {
 		}
 	default:
 		return errInvalidSource
+	}
+	if grant := source.CodeNetwork; grant != nil {
+		if (source.Kind != "mcp-http" && source.Kind != "utcp-http") || source.CredentialEnv == "" || strings.TrimSpace(grant.AccessRef) == "" || !safeText(grant.AccessRef, 512) {
+			return errInvalidSource
+		}
+		destination, ok := codeNetworkDestination(source.Endpoint)
+		if !ok || grant.HostPort != destination {
+			return errInvalidSource
+		}
 	}
 	seen := make(map[string]bool, len(source.Tools))
 	for _, tool := range source.Tools {
@@ -131,6 +151,56 @@ func validEndpoint(value string) bool {
 	return u.Scheme == "http" && (strings.EqualFold(u.Hostname(), "localhost") || net.ParseIP(u.Hostname()).IsLoopback())
 }
 
+func codeNetworkDestination(endpoint string) (string, bool) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", false
+	}
+	host := u.Hostname()
+	authority := host
+	if address, err := netip.ParseAddr(host); err == nil {
+		if address.Zone() != "" {
+			return "", false
+		}
+		if address.Is6() {
+			authority = "[" + host + "]"
+		}
+		host = address.String()
+	} else {
+		if len(host) == 0 || len(host) > 253 {
+			return "", false
+		}
+		addressLike := true
+		for _, label := range strings.Split(host, ".") {
+			if !dnsLabelPattern.MatchString(label) {
+				return "", false
+			}
+			addressLike = addressLike && addressPartPattern.MatchString(label)
+		}
+		// Legacy numeric forms can resolve differently across URL consumers.
+		if addressLike {
+			return "", false
+		}
+		host = strings.ToLower(host)
+	}
+	port := "443"
+	if u.Scheme == "http" {
+		port = "80"
+	}
+	if explicit := u.Port(); explicit != "" {
+		number, err := strconv.Atoi(explicit)
+		if err != nil || number < 1 || number > 65535 {
+			return "", false
+		}
+		port = strconv.Itoa(number)
+		authority += ":" + explicit
+	}
+	if authority != u.Host {
+		return "", false
+	}
+	return net.JoinHostPort(host, port), true
+}
+
 func validateApproval(source Source) error {
 	if err := ValidateSource(source); err != nil {
 		return err
@@ -147,6 +217,10 @@ func validateApproval(source Source) error {
 }
 
 func canonicalSource(source Source) Source {
+	if source.CodeNetwork != nil {
+		grant := *source.CodeNetwork
+		source.CodeNetwork = &grant
+	}
 	tools := make([]Tool, len(source.Tools))
 	copy(tools, source.Tools)
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
@@ -255,24 +329,46 @@ func uniqueFields(decoder *json.Decoder) error {
 	return nil
 }
 
+// ValidateApprovalRequest checks consent and selection without repository I/O.
+func ValidateApprovalRequest(req ApprovalRequest) error {
+	if !req.Approved || len(req.Sources) == 0 {
+		return ErrApprovalRequired
+	}
+	hasCodeNetwork := false
+	for _, source := range req.Sources {
+		hasCodeNetwork = hasCodeNetwork || source.CodeNetwork != nil
+	}
+	if hasCodeNetwork && !req.CodeNetworkApproved {
+		return ErrCodeNetworkApprovalRequired
+	}
+	if req.CodeNetworkApproved && !hasCodeNetwork {
+		return errors.New("code network approval requires a selected code network grant")
+	}
+	if len(req.Sources) > 64 {
+		return errInvalidRegistry
+	}
+	seen := make(map[string]bool, len(req.Sources))
+	for _, source := range req.Sources {
+		if err := validateApproval(source); err != nil {
+			return err
+		}
+		if seen[source.ID] {
+			return errInvalidSource
+		}
+		seen[source.ID] = true
+	}
+	return nil
+}
+
 func Approve(ctx context.Context, root string, req ApprovalRequest) (Registry, error) {
 	if err := ctx.Err(); err != nil {
 		return Registry{}, err
 	}
-	if !req.Approved || len(req.Sources) == 0 {
-		return Registry{}, ErrApprovalRequired
-	}
-	if len(req.Sources) > 64 {
-		return Registry{}, errInvalidRegistry
+	if err := ValidateApprovalRequest(req); err != nil {
+		return Registry{}, err
 	}
 	selected := make(map[string]Source, len(req.Sources))
 	for _, source := range req.Sources {
-		if err := validateApproval(source); err != nil {
-			return Registry{}, err
-		}
-		if _, exists := selected[source.ID]; exists {
-			return Registry{}, errInvalidSource
-		}
 		selected[source.ID] = canonicalSource(source)
 	}
 	dir, err := os.OpenRoot(root)
