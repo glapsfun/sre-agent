@@ -473,6 +473,13 @@ Phase 4 and Phase 6 workflow.
 
 ## How to use
 
+Approved sources use `sre sources list`, consent-bound `sources scout
+--approve-scout`, selected `sources approve --approve --file FILE`, and
+`sources call SOURCE TOOL --args FILE --run RUN --id ENTRY`. See
+[approved sources](skills/sre-agent/references/approved-sources.md) for the
+inventory format, provider-enforced read-only access and durable gap receipts.
+These are orchestrator commands; investigator MCP permissions are unchanged.
+
 Start an investigation explicitly with the slash command:
 
 ```text

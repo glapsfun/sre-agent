@@ -78,6 +78,15 @@ a compact receipt so presentation size cannot erase its write identity.
 
 ## Collection and external boundaries
 
+The orchestrator's `sources` commands manage approved integrations in private
+repository-local `.sre-sources.json`. Scouting requires explicit consent and
+never launches configured servers or calls their tools. Separate approval saves
+selected nonsecret descriptors. Calls pin approved MCP endpoints, tools and
+schema digests, bound requests and redact credentials; provider-enforced read-only
+identities remain the remote permission boundary. Source calls record concise
+evidence/gap receipts, with no raw response persistence. See
+[source workflow](../plugins/sre-agent/skills/sre-agent/references/approved-sources.md).
+
 [executil](../internal/executil/exec.go) runs subprocesses with deadlines and
 bounded diagnostics. [Kubernetes execution](../internal/executil/kubernetes.go)
 pins one context and rejects per-command target overrides. Discovery uses its

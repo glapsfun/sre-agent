@@ -52,6 +52,9 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, disp
 }
 
 func runWithInputAt(args []string, stdin io.Reader, stdout, stderr io.Writer, dispatch func(string) (any, error), now func() time.Time) int {
+	if len(args) > 0 && args[0] == "sources" {
+		return runSources(args[1:], stdin, stdout, stderr, now)
+	}
 	if len(args) > 0 && args[0] == "mcp" {
 		if len(args) != 1 {
 			fmt.Fprintln(stderr, "usage: sre mcp")

@@ -126,6 +126,14 @@ unresolved incident. Inspect gaps as well as the exit status.
 
 ## Record, resume, and report
 
+Use `sre sources list --repo <repository>` to inspect approved integrations.
+On first use, ask about known sources and obtain permission before
+`sources scout --approve-scout`. Saving selected tools requires a separate
+`sources approve --approve --file FILE`. Later calls reuse approval and record
+concise source evidence or explicit gaps. See the
+[source workflow](plugins/sre-agent/skills/sre-agent/references/approved-sources.md)
+for credentials, read-only access and the inventory format.
+
 Use an explicit run ID when returning to an incident. Replace the temporary
 repository with the actual incident repository for real work. The main
 conversation records each observation, hypothesis, approval, action, and

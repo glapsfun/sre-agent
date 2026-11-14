@@ -216,8 +216,15 @@ reset or a new run to bypass the limit.
 
 ### Phase 0 — Bootstrap context
 
+First run `sre sources list --repo <repository>` and read
+`references/approved-sources.md`. If approvals are missing, ask about known
+sources and obtain explicit scout consent before inspecting configs or probing
+access. Reuse approved sources later without automatic scouting. Every new scout
+and every saved selection needs separate approval. Keep unavailable-source gaps.
+
 Before scoping, load prior knowledge. If `docs/sre-agent-memo.md` exists: read
-it, run the **fast freshness check** in `references/project-memo.md` (contexts,
+it, and only after scout approval run the **fast freshness check** in
+`references/project-memo.md` (contexts,
 namespaces, service-map workloads, obs endpoints), and seed the ledger's
 `Environment:` line from memo facts that pass — stamped `✓ verified <today>`.
 The `Tools:` line records local CLI availability, which the memo does **not**
@@ -242,6 +249,12 @@ recall, map the symptom onto the canonical signature classes in
 vocabulary).
 
 ### Phase 2 — Discover
+
+Use the consent-bound source scout in `references/approved-sources.md` to
+inventory integrations and present selected tools for approval. All discovery
+and freshness procedures below require that explicit scout consent. On reuse,
+skip them and use approved sources; unavailable access is a gap, not permission
+to scout again. Registry operations remain orchestrator-only.
 
 On a **cold start** (no memo), prefer `sre discover --timeout 10s`. Use
 `bash scripts/sre discover --timeout 10s` when the installed skill provides
@@ -575,6 +588,7 @@ Always record missing capability in the ledger; never silently skip.
 
 | File | Read when |
 | :--- | :--- |
+| `references/approved-sources.md` | First/repeat source scouting, explicit selections, provider read-only access and collection receipts |
 | `references/discovery.md` | Phase 2 — interpreting discovery output, manual endpoint hunting, port-forward patterns |
 | `references/project-memo.md` | Phase 0 bootstrap + Phase 6 end-of-run write-back — memo schema, fast freshness check, update rules, changelog/discovery-history conventions |
 | `references/incident-memory.md` | Phase 4 recall + Phase 6 capture — incident signature, index/recall recipe, capture rules |
