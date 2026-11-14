@@ -720,3 +720,97 @@ func TestConcurrentApprovalsPreserveEverySuccessfulSelection(t *testing.T) {
 		t.Fatalf("lost concurrent updates: count=%d err=%v", len(got.Sources), err)
 	}
 }
+
+func TestApprovalDigestCanonicalEncoding(t *testing.T) {
+	approved := ApprovedSource{Source: candidate("metrics"), ApprovedAt: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)}
+	digest, err := ApprovalDigest(approved)
+	if err != nil || digest != "c7839fd78a4fda94a106e7f075f18bb1f636285912a8b55a950438885133e694" {
+		t.Fatalf("digest %q, error %v", digest, err)
+	}
+	approved.ApprovedAt = approved.ApprovedAt.In(time.FixedZone("offset", -7*60*60))
+	if equivalent, err := ApprovalDigest(approved); err != nil || equivalent != digest {
+		t.Fatalf("equivalent instant changed digest: %q %v", equivalent, err)
+	}
+	approved.CodeNetwork = &CodeNetwork{HostPort: "metrics.example:443", AccessRef: "policy/network-reader"}
+	approved.Tools = append(approved.Tools, Tool{Name: "another", SchemaDigest: strings.Repeat("b", 64), ReadOnly: true})
+	before, _ := json.Marshal(approved)
+	first, err := ApprovalDigest(approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := json.Marshal(approved)
+	if !bytes.Equal(before, after) {
+		t.Fatal("fingerprinting mutated caller-owned tools or network grant")
+	}
+	approved.Tools[0], approved.Tools[1] = approved.Tools[1], approved.Tools[0]
+	if reordered, err := ApprovalDigest(approved); err != nil || reordered != first {
+		t.Fatalf("tool order changed digest: %q %v", reordered, err)
+	}
+}
+
+func TestApprovalDigestBindsAllApprovedFields(t *testing.T) {
+	original := ApprovedSource{Source: codeNetworkCandidate("metrics"), ApprovedAt: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)}
+	original.Reference = "metrics/reference"
+	before, err := ApprovalDigest(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*ApprovedSource){
+		"id":              func(a *ApprovedSource) { a.ID = "other" },
+		"name":            func(a *ApprovedSource) { a.Name = "Other" },
+		"kind":            func(a *ApprovedSource) { a.Kind = "utcp-http" },
+		"endpoint":        func(a *ApprovedSource) { a.Endpoint += "/other" },
+		"credential":      func(a *ApprovedSource) { a.CredentialEnv = "OTHER_TOKEN" },
+		"access policy":   func(a *ApprovedSource) { a.AccessRef = "policy/other-reader" },
+		"reference":       func(a *ApprovedSource) { a.Reference = "other/reference" },
+		"tool name":       func(a *ApprovedSource) { a.Tools[0].Name = "other" },
+		"tool schema":     func(a *ApprovedSource) { a.Tools[0].SchemaDigest = strings.Repeat("b", 64) },
+		"tool membership": func(a *ApprovedSource) { a.Tools = nil },
+		"network removal": func(a *ApprovedSource) { a.CodeNetwork = nil },
+		"network policy":  func(a *ApprovedSource) { a.CodeNetwork.AccessRef = "policy/other-network" },
+		"network destination": func(a *ApprovedSource) {
+			a.Endpoint = "https://other.example/mcp"
+			a.CodeNetwork.HostPort = "other.example:443"
+		},
+		"approval time": func(a *ApprovedSource) { a.ApprovedAt = a.ApprovedAt.Add(time.Nanosecond) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := original
+			changed.Source = canonicalSource(original.Source)
+			change(&changed)
+			after, err := ApprovalDigest(changed)
+			if err != nil || after == before {
+				t.Fatalf("changed approval was not bound: %q %v", after, err)
+			}
+		})
+	}
+}
+
+func TestApprovalDigestRejectsInvalidApprovals(t *testing.T) {
+	for name, change := range map[string]func(*ApprovedSource){
+		"descriptor":        func(a *ApprovedSource) { a.Endpoint = "https://example.com/?token=private-value" },
+		"unapproved policy": func(a *ApprovedSource) { a.AccessRef = "" },
+		"writable tool":     func(a *ApprovedSource) { a.Tools[0].ReadOnly = false },
+		"duplicate tool":    func(a *ApprovedSource) { a.Tools = append(a.Tools, a.Tools[0]) },
+		"schema":            func(a *ApprovedSource) { a.Tools[0].SchemaDigest = "invalid" },
+		"network": func(a *ApprovedSource) {
+			a.CodeNetwork = &CodeNetwork{HostPort: "other.example:443", AccessRef: "private-value"}
+		},
+		"zero time":     func(a *ApprovedSource) { a.ApprovedAt = time.Time{} },
+		"year zero":     func(a *ApprovedSource) { a.ApprovedAt = time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC) },
+		"year overflow": func(a *ApprovedSource) { a.ApprovedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
+		"UTC underflow": func(a *ApprovedSource) { a.ApprovedAt = time.Date(1, 1, 1, 0, 0, 0, 0, time.FixedZone("offset", 3600)) },
+		"UTC overflow": func(a *ApprovedSource) {
+			a.ApprovedAt = time.Date(9999, 12, 31, 23, 59, 59, 0, time.FixedZone("offset", -3600))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			approved := ApprovedSource{Source: candidate("metrics"), ApprovedAt: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)}
+			change(&approved)
+			digest, err := ApprovalDigest(approved)
+			if err == nil || digest != "" || strings.Contains(err.Error(), "private-value") {
+				t.Fatalf("invalid approval accepted or leaked: %q %v", digest, err)
+			}
+		})
+	}
+}

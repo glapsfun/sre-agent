@@ -490,3 +490,181 @@ func TestCallSuccessUsesOneCredentialAndPreservesProvenance(t *testing.T) {
 		t.Fatal("call persisted data")
 	}
 }
+
+// Counts every HTTP request, including MCP initialization and UTCP manual reads.
+func pinnedCallFixture(t *testing.T, kind string) (string, ApprovedSource, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	root := t.TempDir()
+	requests, invocations := new(atomic.Int32), new(atomic.Int32)
+	server := mcp.NewServer(&mcp.Implementation{Name: "pinned", Version: "1"}, nil)
+	server.AddTool(&mcp.Tool{Name: "read", InputSchema: map[string]any{"type": "object"}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		invocations.Add(1)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "approved evidence"}}}, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{JSONResponse: true})
+	var manual string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "Bearer private-bearer-value" {
+			t.Error("wrong approved credential")
+		}
+		if kind == "mcp-http" {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/approved" {
+			fmt.Fprint(w, manual)
+			return
+		}
+		if r.URL.Path != "/api" {
+			t.Error("wrong invocation endpoint")
+		}
+		invocations.Add(1)
+		fmt.Fprint(w, `{"evidence":"approved evidence"}`)
+	}))
+	t.Cleanup(ts.Close)
+	src := callSource(ts.URL + "/approved")
+	src.CredentialEnv = "METRICS_TOKEN"
+	if kind == "utcp-http" {
+		manual = utcpManual(ts.URL+"/api", `{"type":"object"}`, "")
+		src = utcpApproved(t, root, ts.URL+"/approved")
+	}
+	src.Reference = "private-reference-marker"
+	src.CodeNetwork = &CodeNetwork{HostPort: strings.TrimPrefix(ts.URL, "http://"), AccessRef: "private-network-policy-marker"}
+	approved := ApprovedSource{Source: src, ApprovedAt: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)}
+	writePinnedApproval(t, root, approved)
+	requests.Store(0)
+	return root, approved, requests, invocations
+}
+
+func writePinnedApproval(t *testing.T, root string, approved ApprovedSource) {
+	t.Helper()
+	raw, err := json.Marshal(Registry{Version: 1, Sources: []ApprovedSource{approved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScoutFile(t, root, RegistryFilename, string(raw))
+}
+
+func TestCallApprovalPinRejectsChangesBeforeCredentialsOrContact(t *testing.T) {
+	for _, kind := range []string{"mcp-http", "utcp-http"} {
+		t.Run(kind, func(t *testing.T) {
+			root, original, requests, invocations := pinnedCallFixture(t, kind)
+			pin, err := ApprovalDigest(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, change := range map[string]func(*ApprovedSource){
+				"name": func(a *ApprovedSource) { a.Name = "private-name-marker" },
+				"kind": func(a *ApprovedSource) {
+					if kind == "mcp-http" {
+						a.Kind = "utcp-http"
+					} else {
+						a.Kind = "mcp-http"
+					}
+				},
+				"endpoint":       func(a *ApprovedSource) { a.Endpoint += "/private-path-marker" },
+				"credential":     func(a *ApprovedSource) { a.CredentialEnv = "PRIVATE_CHANGED_TOKEN" },
+				"policy":         func(a *ApprovedSource) { a.AccessRef = "private-policy-marker" },
+				"reference":      func(a *ApprovedSource) { a.Reference = "private-changed-reference-marker" },
+				"tool name":      func(a *ApprovedSource) { a.Tools[0].Name = "other" },
+				"schema":         func(a *ApprovedSource) { a.Tools[0].SchemaDigest = strings.Repeat("a", 64) },
+				"tools":          func(a *ApprovedSource) { a.Tools = nil },
+				"network grant":  func(a *ApprovedSource) { a.CodeNetwork = nil },
+				"network policy": func(a *ApprovedSource) { a.CodeNetwork.AccessRef = "private-changed-policy-marker" },
+				"network destination": func(a *ApprovedSource) {
+					a.Endpoint = "https://other.example/mcp"
+					a.CodeNetwork.HostPort = "other.example:443"
+				},
+				"timestamp": func(a *ApprovedSource) { a.ApprovedAt = a.ApprovedAt.Add(time.Nanosecond) },
+			} {
+				t.Run(name, func(t *testing.T) {
+					changed := original
+					changed.Source = canonicalSource(original.Source)
+					change(&changed)
+					writePinnedApproval(t, root, changed)
+					lookups := 0
+					svc := Service{LookupEnv: func(string) (string, bool) { lookups++; return "private-bearer-value", true }}
+					result, err := svc.Call(t.Context(), root, CallOptions{SourceID: "metrics", Tool: "read", ExpectedApprovalDigest: pin})
+					assertCallGap(t, result, err)
+					if err.Error() != "approved source changed" || len(result.Gaps) != 1 || result.Gaps[0].Reason != "approved source changed" || result.Gaps[0].Impact != "Source evidence was not collected; review the changed source approval before retrying." {
+						t.Fatalf("missing fixed approval-change diagnostic: %+v %v", result, err)
+					}
+					if lookups != 0 || requests.Load() != 0 || invocations.Load() != 0 || len(result.Data) != 0 || result.Reference != "" {
+						t.Fatalf("changed approval used: lookups %d requests %d invokes %d result %+v", lookups, requests.Load(), invocations.Load(), result)
+					}
+					raw, _ := json.Marshal(result)
+					actual, _ := ApprovalDigest(changed)
+					for _, forbidden := range []string{pin, actual, "private-", "PRIVATE_CHANGED_TOKEN"} {
+						if strings.Contains(string(raw)+err.Error(), forbidden) {
+							t.Fatal("approval diagnostic leaked fingerprint or metadata")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCallMatchingPinUsesCheckedApprovalAfterRegistryChanges(t *testing.T) {
+	for _, kind := range []string{"mcp-http", "utcp-http"} {
+		t.Run(kind, func(t *testing.T) {
+			root, approved, requests, invocations := pinnedCallFixture(t, kind)
+			pin, err := ApprovalDigest(approved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var unexpected atomic.Int32
+			other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { unexpected.Add(1); w.WriteHeader(500) }))
+			defer other.Close()
+			lookups := 0
+			svc := Service{LookupEnv: func(key string) (string, bool) {
+				lookups++
+				if key != "METRICS_TOKEN" {
+					t.Error("wrong approved credential variable")
+				}
+				changed := approved
+				changed.Source = canonicalSource(approved.Source)
+				changed.Endpoint = other.URL
+				changed.CodeNetwork.HostPort = strings.TrimPrefix(other.URL, "http://")
+				changed.Reference = "changed/reference"
+				writePinnedApproval(t, root, changed)
+				return "private-bearer-value", true
+			}}
+			result, err := svc.Call(t.Context(), root, CallOptions{SourceID: "metrics", Tool: "read", ExpectedApprovalDigest: pin})
+			if err != nil || len(result.Gaps) != 0 || !strings.Contains(string(result.Data), "approved evidence") || result.Reference != approved.Reference || lookups != 1 || requests.Load() < 2 || invocations.Load() != 1 || unexpected.Load() != 0 {
+				t.Fatalf("checked approval not used: %+v %v lookups %d requests %d invokes %d unexpected %d", result, err, lookups, requests.Load(), invocations.Load(), unexpected.Load())
+			}
+		})
+	}
+}
+
+func TestCallApprovalPinValidationAndCancellationOrdering(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, pin := range []string{"short", strings.Repeat("A", 64), strings.Repeat("g", 64), strings.Repeat("a", 63), strings.Repeat("a", 65), " " + strings.Repeat("a", 64)} {
+		opts := CallOptions{SourceID: "metrics", Tool: "read", ExpectedApprovalDigest: pin}
+		if err := ValidateCallOptions(opts); err == nil {
+			t.Fatal("malformed pin accepted")
+		}
+		for _, callCtx := range []context.Context{t.Context(), ctx} {
+			svc := Service{Now: func() time.Time { t.Error("clock reached before options validation"); return time.Now() }, LookupEnv: func(string) (string, bool) { t.Error("credential lookup"); return "", false }}
+			result, err := svc.Call(callCtx, "/missing", opts)
+			assertCallGap(t, result, err)
+			if result.Gaps[0].Reason != "invalid source call options" || callCtx.Err() != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("validation ordering or cancellation changed: %+v %v", result, err)
+			}
+		}
+	}
+	for _, pin := range []string{"", strings.Repeat("a", 64)} {
+		opts := CallOptions{SourceID: "metrics", Tool: "read", ExpectedApprovalDigest: pin}
+		if err := ValidateCallOptions(opts); err != nil {
+			t.Fatal(err)
+		}
+		result, err := (Service{}).Call(ctx, "/missing", opts)
+		if !errors.Is(err, context.Canceled) || len(result.Gaps) != 1 || result.Gaps[0].Reason != "source collection canceled" {
+			t.Fatalf("cancellation precedence: %+v %v", result, err)
+		}
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -58,6 +60,24 @@ type Source struct {
 type ApprovedSource struct {
 	Source
 	ApprovedAt time.Time `json:"approved_at"`
+}
+
+// ApprovalDigest binds a call to the full saved approval without mutating its owner.
+func ApprovalDigest(approved ApprovedSource) (string, error) {
+	if validateApproval(approved.Source) != nil || approved.ApprovedAt.IsZero() || approved.ApprovedAt.Year() < 1 || approved.ApprovedAt.Year() > 9999 {
+		return "", errInvalidRegistry
+	}
+	approved.ApprovedAt = approved.ApprovedAt.UTC()
+	if approved.ApprovedAt.Year() < 1 || approved.ApprovedAt.Year() > 9999 {
+		return "", errInvalidRegistry
+	}
+	approved.Source = canonicalSource(approved.Source)
+	raw, err := json.Marshal(approved)
+	if err != nil {
+		return "", errInvalidRegistry
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 type Registry struct {

@@ -15,10 +15,11 @@ import (
 )
 
 type CallOptions struct {
-	SourceID  string
-	Tool      string
-	Arguments json.RawMessage
-	Timeout   time.Duration
+	ExpectedApprovalDigest string
+	SourceID               string
+	Tool                   string
+	Arguments              json.RawMessage
+	Timeout                time.Duration
 }
 
 type CallResult struct {
@@ -36,7 +37,7 @@ func ValidateCallOptions(opts CallOptions) error {
 	if len(arguments) == 0 {
 		arguments = json.RawMessage(`{}`)
 	}
-	if !identifierPattern.MatchString(opts.SourceID) || !identifierPattern.MatchString(opts.Tool) || opts.Timeout < 0 || opts.Timeout > 60*time.Second || !validCallArguments(arguments) {
+	if !identifierPattern.MatchString(opts.SourceID) || !identifierPattern.MatchString(opts.Tool) || opts.Timeout < 0 || opts.Timeout > 60*time.Second || !validCallArguments(arguments) || (opts.ExpectedApprovalDigest != "" && !digestPattern.MatchString(opts.ExpectedApprovalDigest)) {
 		return errors.New("invalid source call options")
 	}
 	return nil
@@ -85,16 +86,24 @@ func (s Service) Call(ctx context.Context, root string, opts CallOptions) (CallR
 	if err != nil {
 		return fail("approved source registry unavailable", "Source evidence was not collected because saved approval could not be verified.")
 	}
-	var source *Source
-	for _, approved := range registry.Sources {
-		if approved.ID == opts.SourceID {
-			source = &approved.Source
+	var approved *ApprovedSource
+	for i := range registry.Sources {
+		if registry.Sources[i].ID == opts.SourceID {
+			approved = &registry.Sources[i]
 			break
 		}
 	}
-	if source == nil {
+	if approved == nil {
 		return fail("source is not approved", "Source evidence was not collected; explicit source approval is required.")
 	}
+	if opts.ExpectedApprovalDigest != "" {
+		digest, err := ApprovalDigest(*approved)
+		if err != nil || digest != opts.ExpectedApprovalDigest {
+			return fail("approved source changed", "Source evidence was not collected; review the changed source approval before retrying.")
+		}
+	}
+	// Keep invocation bound to the entry checked above, even if the registry changes.
+	source := &approved.Source
 	result.Reference = source.Reference
 	if result.Reference == "" {
 		result.Reference = source.Endpoint
