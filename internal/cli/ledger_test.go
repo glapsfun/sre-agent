@@ -52,6 +52,30 @@ func ledgerData(t *testing.T, root, input string, args ...string) map[string]any
 	}
 	return envelope["data"].(map[string]any)
 }
+
+func TestLedgerCLIRoundGateAndResumeDoNotExecuteChecks(t *testing.T) {
+	root := ledgerRepo(t)
+	marker := filepath.Join(root, "must-not-exist")
+	ledgerData(t, root, "", "run", "start", "uncertain incident", "--id", "rounds")
+	payload := ledger.MetadataUpdate{Investigation: &ledger.InvestigationUpdate{Number: 0, State: "start", Reason: "collect safely", Checks: []string{"touch " + marker}, EvidenceIDs: []string{}, Questions: []string{"source missing?"}}}
+	raw, _ := json.Marshal(payload)
+	ledgerData(t, root, string(raw), "ledger", "add", "metadata", "--run", "rounds", "--id", "start", "--file", "-")
+	code, _, _ := ledgerCLI(t, root, string(raw), "ledger", "add", "metadata", "--run", "rounds", "--id", "duplicate", "--file", "-")
+	if code == 0 {
+		t.Fatal("duplicate start accepted")
+	}
+	payload.Investigation.State = "finish"
+	payload.Investigation.Assessment = "no_useful_data"
+	raw, _ = json.Marshal(payload)
+	ledgerData(t, root, string(raw), "ledger", "add", "metadata", "--run", "rounds", "--id", "finish", "--file", "-")
+	data := ledgerData(t, root, "", "run", "resume", "rounds")
+	if !strings.Contains(data["view"].(map[string]any)["text"].(string), "no_useful_data") {
+		t.Fatal("resume hid stop reason")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("recorded check executed", err)
+	}
+}
 func TestLedgerCommandsSelectionAndRetry(t *testing.T) {
 	root := ledgerRepo(t)
 	start := ledgerData(t, root, "", "--id", "one", "run", "start", "first problem", "--session-id", "harness/session α")

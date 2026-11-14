@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -50,6 +51,48 @@ func TestDraftSnapshotStagesNeverImplyResolution(t *testing.T) {
 			after, _ := json.Marshal(run)
 			if string(before) != string(after) {
 				t.Fatal("projection mutated run")
+			}
+		}
+	}
+}
+
+func TestSnapshotRetainsSourceGapsBeyondEvidenceExcerpt(t *testing.T) {
+	entries := []ledger.Entry{}
+	for i := range 10 {
+		gap := ""
+		if i == 9 {
+			gap = "logs denied; cannot compare failed requests password=secret-value"
+		}
+		addEntry(t, &entries, fmt.Sprintf("source%d", i), ledger.KindEvidence, ledger.Evidence{Fact: "collection result", Source: "logs", Gap: gap})
+	}
+	snapshot := snapshotFor(t, runFrom(t, entries), SnapshotOptions{Detail: true})
+	for _, content := range []string{snapshot.Markdown, snapshot.Detail, strings.Join(snapshot.Gaps, " ")} {
+		if !strings.Contains(content, "logs denied; cannot compare failed requests") || strings.Contains(content, "secret-value") {
+			t.Fatal("source gap missing or unredacted", content)
+		}
+	}
+}
+
+func TestSnapshotInvestigationStopsRetainUncertainty(t *testing.T) {
+	entries := validatedEntries(t)[:4]
+	for _, id := range []string{"network", "quota"} {
+		addEntry(t, &entries, id, ledger.KindHypothesis, ledger.Hypothesis{Statement: id + " possible cause", Mechanism: "requests delayed", Confidence: "low", Status: "open", Supporting: []string{}, Contradicting: []string{}, DiscriminatingTest: "compare measurements"})
+	}
+	for _, state := range []string{"start", "finish"} {
+		assessment := ""
+		if state == "finish" {
+			assessment = "no_useful_data"
+		}
+		addEntry(t, &entries, state, ledger.KindMetadata, ledger.MetadataUpdate{Investigation: &ledger.InvestigationUpdate{Number: 0, State: state, Assessment: assessment, Reason: "source access unavailable", Checks: []string{"inspect queue depth"}, EvidenceIDs: []string{}, Questions: []string{"which failure began first?"}}})
+	}
+	for _, stage := range []string{"interim", "post-incident"} {
+		snapshot := snapshotFor(t, runFrom(t, entries), SnapshotOptions{Stage: stage, Detail: true})
+		if snapshot.Status != "unresolved" {
+			t.Fatal("stop implied resolution")
+		}
+		for _, value := range []string{"no_useful_data", "network possible cause", "quota possible cause", "which failure began first?", "inspect queue depth", "source access unavailable"} {
+			if !strings.Contains(snapshot.Markdown, strings.ReplaceAll(value, "_", `\_`)) || !strings.Contains(snapshot.Detail, strings.ReplaceAll(value, "_", `\_`)) {
+				t.Fatalf("lost %q", value)
 			}
 		}
 	}

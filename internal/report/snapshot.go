@@ -82,6 +82,12 @@ func GenerateSnapshot(ctx context.Context, source RunReader, runID string, opts 
 	if len(snapshot.State.Hypotheses) == 0 {
 		doc.Gaps = append(doc.Gaps, "Hypotheses not recorded")
 	}
+	for _, entry := range snapshot.State.Evidence {
+		payload, _ := ledger.DecodePayload(entry.Kind, entry.Payload)
+		if gap := payload.(ledger.Evidence).Gap; gap != "" {
+			doc.Gaps = append(doc.Gaps, entry.ID+": "+gap)
+		}
+	}
 	w := snapshotWriter{policy: p}
 	w.header(snapshot, doc, "Summary")
 	w.field("Impact", snapshot.State.Impact)
@@ -94,6 +100,7 @@ func GenerateSnapshot(ctx context.Context, source RunReader, runID string, opts 
 	if doc.Status == "resolved" {
 		w.field("Validated fix", validation.ActionID)
 	}
+	w.investigation(snapshot.State.Investigation)
 	w.section("Findings and hypotheses")
 	if len(snapshot.State.Hypotheses) == 0 {
 		w.field("Hypotheses", "")
@@ -164,6 +171,7 @@ func GenerateSnapshot(ctx context.Context, source RunReader, runID string, opts 
 	if opts.Detail {
 		detail := snapshotWriter{policy: p}
 		detail.header(snapshot, doc, "Detailed timeline")
+		detail.investigation(snapshot.State.Investigation)
 		detail.out.WriteString("Entries are ordered by ledger sequence. Recorded time is not necessarily the event time.\n")
 		for _, entry := range snapshot.Entries {
 			payload, _ := ledger.DecodePayload(entry.Kind, entry.Payload)
@@ -187,6 +195,26 @@ func GenerateSnapshot(ctx context.Context, source RunReader, runID string, opts 
 		doc.Detail += p.review()
 	}
 	return doc, nil
+}
+
+func (w *snapshotWriter) investigation(state *ledger.InvestigationState) {
+	if state == nil {
+		w.field("Investigation rounds", "")
+		return
+	}
+	w.section("Investigation rounds")
+	w.field("Round (initial 0; at most 4 additional)", fmt.Sprint(state.Number))
+	w.field("Collection active", fmt.Sprint(state.Active))
+	w.field("Recorded assessment", state.Assessment)
+	w.field("Stop reason", state.StopReason)
+	w.field("Reason", state.Reason)
+	for _, check := range state.Checks {
+		w.field("Check", check)
+	}
+	w.field("Round evidence", strings.Join(state.EvidenceIDs, ", "))
+	for _, question := range state.Questions {
+		w.field("Unresolved question", question)
+	}
 }
 
 type snapshotWriter struct {

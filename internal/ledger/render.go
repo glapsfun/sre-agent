@@ -194,6 +194,11 @@ func renderPage(run Run, summary ValidationSummary, offset, count, limit int, wr
 		expected = fields.json("expected", payload)
 	}
 	options := historyCount(run.State.Options)
+	if run.State.Investigation != nil {
+		fmt.Fprintf(&out, "Investigation rounds: %s\n", fields.json("investigation", run.State.Investigation))
+	} else {
+		out.WriteString("Investigation rounds: not recorded\n")
+	}
 	if len(run.State.Approvals) > 0 {
 		options += "; approvals: " + historyCount(run.State.Approvals)
 	}
@@ -257,6 +262,10 @@ func renderDiagnostic(run Run, summary ValidationSummary, offset, count int, wra
 	text := "INVESTIGATION LEDGER - " + omitted + "\nPhase: " + omitted + "\nEnvironment: " + omitted + "\nTools: " + omitted + " | Missing: " + omitted + "\nWave 1 investigators: " + omitted + "\nWave 2 investigators: " + omitted + "\nEvidence: " + historyCount(run.State.Evidence) + "\nHypotheses: " + historyCount(run.State.Hypotheses) + "\nExpected behavior: " + omitted + "\nOptions proposed: " + historyCount(run.State.Options) + "\nActions taken: " + historyCount(run.State.Actions) + "\nValidation: " + summary.Verdict + "\nSAFETY VIOLATION records: " + historyCount(run.State.SafetyViolations) + "\nHistory:\n"
 	ids := make([]string, 0, count)
 	fields := map[string]bool{"problem": true, "phase": true, "environment": true, "tools": true, "wave1": true, "wave2": true, "expected": true, "validation.criteria": true}
+	if state := run.State.Investigation; state != nil {
+		text += fmt.Sprintf("Investigation round: %d; active: %t; assessment: %s; stop: %s\nRound checks and unresolved questions: %s\n", state.Number, state.Active, state.Assessment, state.StopReason, omitted)
+		fields["investigation"] = true
+	}
 	if run.State.Impact != "" {
 		text += "Impact: " + omitted + "\n"
 		fields["impact"] = true
