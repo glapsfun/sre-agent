@@ -1,14 +1,14 @@
 # Releases and maintainer checks
 
-The current packaged version and launcher pin are `v0.17.0`. The
-[release](https://github.com/glapsfun/sre-agent/releases/tag/v0.17.0) contains four
-native executables plus `SHA256SUMS`:
+The packaged version and launcher pin target `v0.18.0`. Publication is verified
+only when its release workflow completes all nine jobs. Expected release assets
+are four native executables plus `SHA256SUMS`:
 
 ```text
-sre_v0.17.0_linux_amd64
-sre_v0.17.0_linux_arm64
-sre_v0.17.0_darwin_amd64
-sre_v0.17.0_darwin_arm64
+sre_v0.18.0_linux_amd64
+sre_v0.18.0_linux_arm64
+sre_v0.18.0_darwin_amd64
+sre_v0.18.0_darwin_arm64
 SHA256SUMS
 ```
 
@@ -53,11 +53,11 @@ A release adopts one version across these independent places:
   [Codex compatibility manifest](../plugins/sre-agent/.codex-plugin/plugin.json),
   [portable plugin manifest](../plugins/sre-agent/plugin.json), and
   [Gemini extension manifest](../plugins/sre-agent/gemini-extension.json) use
-  `0.17.0` without the tag prefix.
-- The [launcher](../plugins/sre-agent/skills/sre-agent/scripts/sre) pins `v0.17.0`.
+  `0.18.0` without the tag prefix.
+- The [launcher](../plugins/sre-agent/skills/sre-agent/scripts/sre) pins `v0.18.0`.
   Adopting another binary requires an explicit source change to that pin and
   corresponding fixtures/documentation.
-- The tag and asset names use `v0.17.0`. The release build injects that same tag
+- The tag and asset names use `v0.18.0`. The release build injects that same tag
   into `github.com/glapsfun/sre-agent/internal/cli.Version` with `-ldflags`.
   Plain `go build` leaves the [default version](../internal/cli/cli.go) as `dev`.
 
@@ -91,7 +91,8 @@ back a release. There is no additional release helper or changelog-generation
 step in the tracked release workflow.
 
 For a manual installation, choose the exact asset for the target platform from
-the release above, download its `SHA256SUMS`, verify the matching hash, then
+the [release page](https://github.com/glapsfun/sre-agent/releases), download its
+`SHA256SUMS`, verify the matching hash, then
 make the executable runnable and check `version` before using it. Checksums
 establish integrity relative to that manifest; the assets are not independently
 signed provenance. A local source build is an alternative when the pinned asset
@@ -105,8 +106,8 @@ then `XDG_CACHE_HOME`, then `$HOME/.cache`, with nonempty values taking
 precedence. The final path is:
 
 ```text
-<CACHE_ROOT>/sre-agent/v0.17.0/<os>-<arch>/sre
-<CACHE_ROOT>/sre-agent/v0.17.0/<os>-<arch>/SHA256SUMS
+<CACHE_ROOT>/sre-agent/v0.18.0/<os>-<arch>/sre
+<CACHE_ROOT>/sre-agent/v0.18.0/<os>-<arch>/SHA256SUMS
 ```
 
 On a missing cache it creates a per-platform lock directory, rechecks for a

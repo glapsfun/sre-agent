@@ -14,6 +14,6 @@ prompt, the approval loop, and an offline CLI walkthrough.
 
 These documents describe the implementation at source commit
 `310a177a57cdb56d105f05b38f73a979e986c9f7`, with the subsequent documentation
-and FinOps-removal changes. The launcher and plugin manifests remain at 0.17.0.
+and FinOps-removal changes. The launcher and plugin manifests target 0.18.0.
 They are current-state documentation, not a roadmap or a statement of historical
 product intent.

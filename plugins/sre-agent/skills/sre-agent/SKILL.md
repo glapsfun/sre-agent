@@ -111,7 +111,7 @@ route around a read-only guard denial. `npx skills` installs do not register
 plugin MCP servers. Manual registration for Codex, Copilot CLI, and VS Code is
 documented in the [plugin README](../../README.md#mcp-tools); the launch command
 is the installed `scripts/sre` executable with a separate `mcp` argument.
-The pinned `v0.17.0` release may be unavailable until issue #5 is completed;
+The pinned `v0.18.0` release may be unavailable until publication completes;
 source-build fixture success does not establish release availability.
 
 ## Reuse installed skills

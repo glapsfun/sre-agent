@@ -76,7 +76,7 @@ The source-built `sre mcp` command serves stdio only. It exposes exactly
 `discover`, `logs_fold`, `prom_query`, `timeline`, `recall`, `run_resume`,
 `ledger_add`, and `report`. It has no HTTP listener, resources, or authentication
 layer. stdout carries only MCP messages; diagnostics go to stderr.
-The launcher pins `v0.17.0`. If that release or its `mcp` command is unavailable,
+The launcher pins `v0.18.0`. If that release or its `mcp` command is unavailable,
 use a verified source build or the CLI and script fallbacks below.
 
 Prefer available typed read tools for covered operations. Supply the exact
@@ -209,7 +209,7 @@ read-only identity on every host; a denied call is not a reason to bypass it.
 ## CLI launcher
 
 Run `skills/sre-agent/scripts/sre version` from this plugin directory. The
-launcher downloads the pinned `v0.17.0` release on first use for Linux or macOS,
+launcher downloads the pinned `v0.18.0` release on first use for Linux or macOS,
 on amd64 or arm64. It requires Bash, curl, and a SHA-256 tool: OpenSSL,
 sha256sum, or shasum.
 It prefers OpenSSL when available and verifies all binary bytes on every launch.
