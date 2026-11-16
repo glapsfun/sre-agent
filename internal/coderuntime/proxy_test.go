@@ -22,7 +22,17 @@ import (
 
 func testProxy(t *testing.T, ctx context.Context, target string, budget *proxyBudget) (*egressProxy, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "proxy.sock")
+	// Darwin's TMPDIR and test names can exceed the Unix socket path limit.
+	dir, err := os.MkdirTemp("/tmp", "sre-proxy-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("socket directory cleanup: %v", err)
+		}
+	})
+	path := filepath.Join(dir, "proxy.sock")
 	p, err := startProxy(ctx, path, collect.Invocation{Phase: "source", SourceID: "trusted-source", HostPort: target}, budget)
 	if err != nil {
 		t.Fatal(err)
@@ -490,5 +500,41 @@ func TestProxyTunnelUpstreamHalfClose(t *testing.T) {
 	waitFor(t, func() bool { p.budget.mu.Lock(); defer p.budget.mu.Unlock(); return p.budget.active == 0 })
 	if _, e := p.Close(); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestProxyLongTemporaryPath(t *testing.T) {
+	longRoot := filepath.Join(t.TempDir(), strings.Repeat("long-root-", 12))
+	if err := os.MkdirAll(longRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", longRoot)
+	t.Setenv("GOTMPDIR", longRoot)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "portable-proxy") }))
+	t.Cleanup(s.Close)
+	target := strings.TrimPrefix(s.URL, "http://")
+	var socketDir string
+	t.Run(strings.Repeat("long-subtest-", 8), func(t *testing.T) {
+		p, path := testProxy(t, context.Background(), target, newProxyBudget())
+		socketDir = filepath.Dir(path)
+		info, err := os.Stat(socketDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0700 {
+			t.Fatalf("socket directory permissions %o", info.Mode().Perm())
+		}
+		_, body := proxyRequest(t, path, target)
+		if body != "portable-proxy" {
+			t.Fatalf("response body %q", body)
+		}
+		if _, err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if socketDir != "" {
+		if _, err := os.Stat(socketDir); !os.IsNotExist(err) {
+			t.Fatalf("socket directory remains after cleanup: %v", err)
+		}
 	}
 }
