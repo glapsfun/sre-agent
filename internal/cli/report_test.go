@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glapsfun/sre-agent/internal/ledger"
 	"github.com/glapsfun/sre-agent/internal/report"
@@ -166,7 +167,8 @@ func TestReportCLIFlagIsolationAndErrors(t *testing.T) {
 func TestReportOutMatchesDocument(t *testing.T) {
 	root := ledgerRepo(t)
 	db := seedIncidentCLI(t, root, "selected", "restore image")
-	document, err := report.Generate(t.Context(), ledger.New(db, nil), "selected")
+	now := func() time.Time { return time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC) }
+	document, err := report.GenerateSnapshot(t.Context(), ledger.New(db, nil), "selected", report.SnapshotOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +176,7 @@ func TestReportOutMatchesDocument(t *testing.T) {
 	for _, format := range []string{"json", "text"} {
 		path := filepath.Join(t.TempDir(), "report.md")
 		var out, stderr bytes.Buffer
-		code := RunWithInput([]string{"--out=" + path, "report", "selected", "--repo", root, "--format", format}, nil, &out, &stderr)
+		code := runWithInputAt([]string{"--out=" + path, "report", "selected", "--repo", root, "--format", format}, nil, &out, &stderr, nil, now)
 		if code != 0 || stderr.Len() != 0 {
 			t.Fatalf("%d %s %s", code, &out, &stderr)
 		}

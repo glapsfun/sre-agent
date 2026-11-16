@@ -78,6 +78,118 @@ a compact receipt so presentation size cannot erase its write identity.
 
 ## Collection and external boundaries
 
+The orchestrator's `sources` commands manage approved integrations in private
+repository-local `.sre-sources.json`. Scouting requires explicit consent and
+never launches configured servers or calls their tools. Separate approval saves
+selected nonsecret descriptors. Calls pin approved MCP endpoints, tools and
+schema digests, bound requests and redact credentials; provider-enforced read-only
+identities remain the remote permission boundary. Source calls record concise
+evidence/gap receipts, with no raw response persistence. See
+[source workflow](../plugins/sre-agent/skills/sre-agent/references/approved-sources.md).
+
+The orchestrator's [`collect` adapter](../internal/cli/collect.go) delegates to
+[`collect.Service`](../internal/collect/collect.go). Strict plan/program inputs
+are bounded to 64KiB each and validated before repository state is opened.
+The database and run must already exist. Production supplies the source service
+and [`coderuntime.New()`](../internal/coderuntime/runtime.go), retaining the service
+injection seam for tests. The optional Linux Bun runtime probes a real sandbox
+before selection. Missing prerequisites produce an explicit reason: manual code
+fails, eligible auto uses ordinary calls. Ordinary mode and short/independent
+auto plans never need the runtime. Execution failures after selection retain gaps
+without ordinary fallback. Investigator MCP tools and their seven-read allowlist
+are unchanged. See [CLI flags and program bodies](../README.md#optional-bun-programs)
+and the [real MCP/Bun comparison](code-mode-comparison.md).
+
+### Bun runtime boundaries
+
+Linux amd64/arm64 requires dynamically linked Bun >=1.4.2, Bubblewrap, systemd
+user scopes, `prlimit`, `env`, `ldd`, user/network namespaces, seccomp, and cgroup
+v2 memory/pids/cpu controllers. Missing tools, libraries, manager access or
+enforcement fail the probe; the runtime does not install its dependencies.
+`SRE_TEST_BUN_RUNTIME=1` enables optional real-runtime tests, while
+`SRE_REQUIRE_BUN_RUNTIME=1` fails when prerequisites are missing. Once a probe
+succeeds, execution failures never become skips. Serialize real-resource suites
+with `GOFLAGS=-p=1` when testing all packages under one user manager.
+
+Each source phase starts a separate sandbox with only its own planned helper
+keys, program and runtime files, required Bun libraries, isolated `/proc` and
+`/dev`, and 16MiB temporary storage. Repository/home files, host environment and
+credentials are not mounted or inherited. Go captures source credentials and
+keeps helper arguments outside Bun. The collection snapshots approved source
+descriptors and grant digests. Uncached source adapter calls recheck current
+approval against that snapshot; repeated planned keys reuse cached outcomes.
+The running phase retains its snapshotted network grant, so registry changes do
+not immediately revoke active native operations.
+The offline join runs separately with bounded redacted values and no network
+proxy or helper access. `collection.call(key)` returns `{ok, result}` with the
+[`sources.CallResult`](../internal/sources/call.go) envelope, not the raw provider
+payload. Returned values retain planned key/source bindings; helper activity
+establishes provenance and required coverage, not factual correctness.
+
+The sandbox drops capabilities and isolates user, PID, mount, IPC, UTS, cgroup
+and network namespaces. Seccomp allows Bun threads but blocks process creation,
+namespace changes and privileged inspection operations. Read-only
+mounts and verified resource settings constrain each process: memory 512MiB,
+no swap, 64 tasks, 100% CPU quota, CPU time 5s, file size 2MiB and core limit zero.
+The request deadline bounds execution, with bounded cleanup. `RLIMIT_CORE=0`
+does not govern a pre-existing host piped core handler, which runs in the host's
+initial namespaces. This is not a global guarantee that crashes leave no host
+artifacts. See [Linux core(5)](https://man7.org/linux/man-pages/man5/core.5.html).
+
+Source networking crosses a host-owned proxy restricted to the source's exact
+approved host:port; direct connections have no host network route. The proxy
+supports framed HTTP and CONNECT tunnels. Session budgets allow 64 proxy
+requests/tunnels, eight active connections, 32MiB aggregate proxy traffic,
+16KiB headers and 1MiB encoded audit. HTTPS methods and content inside CONNECT
+are opaque. HTTP destination enforcement is not a remote read-only policy:
+the separate `code_network.access_ref` attests provider-enforced read-only
+access and absence of anonymous mutations across protocols at that destination.
+Neither tool annotations nor this attestation verifies the provider's IAM.
+
+Audit entries describe destinations and denials observed by the host proxy,
+with source, phase and UTC time. Direct attempts blocked inside the namespace
+are invisible to that audit, and it does not log TLS methods, every syscall,
+or prove a response's truth. Go helper activity is tracked separately.
+
+IPC accepts strict bounded JSON frames: at most 128 child frames and 256KiB
+child output, 32MiB host frames and 64KiB stderr across a session. Helper replies
+are at most 2MiB each; at most two helpers run concurrently. Program, aggregate
+intermediate values and join input/output are each bounded to 64KiB, with at
+most 32 planned calls across eight sources. Malformed frames, excess output,
+proxy failures and incomplete cleanup produce an incomplete collection.
+
+### Durable collection receipts
+
+[`collection_receipt_v1`](../internal/cli/collect_receipt.go) is compact JSON in
+`Evidence.Fact`, with source `collection`. Request identity hashes the decoded
+plan, effective mode and timeout, exact program SHA256, and code consent.
+Presentation format, input filenames, and repository path are not identity.
+Receipts retain planned call identities, host activity, outcome, required-key
+coverage, provenance, and gap counts, but exclude raw evidence, arguments,
+program source, runtime audit, and usage fields. Coverage is not factual proof.
+The fact is limited to 24KiB and its encoded ledger evidence to 64KiB. Oversize
+projection removes references in reverse plan order, then gaps in reverse order,
+and reports the omission count without changing the collection outcome.
+
+Replay validates the versioned receipt and request before any registry,
+credential, or runtime access. Successful and failed outcomes replay with their
+original status; raw results are unavailable. For new work, a directory lock
+under an `os.OpenRoot` handle to the existing `.sre-agent` directory serializes
+collection commands, followed by a second receipt check. The lock spans source
+calls and ledger commit and is released only by its owner. Occupied or stale
+locks fail immediately and need operator inspection. Other ledger writers are
+not covered, and conflicting commits fail visibly. This does not make remote
+execution crash-atomic: a crash before receipt commit has an uncertain outcome.
+
+Receipt persistence uses a separate five-second context after collection, even
+if the caller is canceled. Failures preserve live results and warn against
+automatic repetition. Live output uses randomized external-data boundaries;
+the full formatted JSON or indented text, including newline, is capped at 2MiB.
+Presentation overflow omits live results and exits nonzero while preserving
+receipt metadata. Short writes and writer errors return a durable run/entry/seq
+recovery line when committed. Operators should inspect the resumed run and
+receipt before deciding whether another remote collection is appropriate.
+
 [executil](../internal/executil/exec.go) runs subprocesses with deadlines and
 bounded diagnostics. [Kubernetes execution](../internal/executil/kubernetes.go)
 pins one context and rejects per-command target overrides. Discovery uses its
@@ -123,8 +235,9 @@ a newer schema is refused. Use local storage rather than a shared network
 filesystem. [Store tests](../internal/store/store_test.go) exercise permissions,
 migration rollback, concurrency, and linked worktree resolution.
 
-Evidence reaches persistence only when the orchestrator records a typed ledger
-entry. A collection command does not automatically append its output. The
+Evidence reaches persistence only through a typed ledger entry. `sources call`
+and `collect` automatically append compact receipts; raw command output needs
+an explicit observation from the orchestrator. The
 [ledger service](../internal/ledger/service.go) redacts before committing,
 validates same-run typed references, and serializes append sequence numbers.
 Stable run/entry IDs enable retry; a conflicting payload under an existing
@@ -152,10 +265,14 @@ snapshot into a historical record. It requires an explicit run, approved
 applied action, and passing current criteria, including declared observation
 windows. [Recall](../internal/incident/recall.go) ranks service, symptom, and
 fingerprint matches as historical candidates. The score is not causal confidence.
-[Reports](../internal/report/report.go) use the same validation evaluator and
+[Reports](../internal/report/snapshot.go) use the same validation evaluator and
 remain unresolved without a validated fix. They do not execute commands or
-fetch linked evidence. CLI `--out` writes sanitized Markdown through an atomic
-file replacement; MCP returns content only. See [validation](../internal/ledger/validation.go),
+fetch linked evidence. Reports read an existing compatible database without
+initialization or migrations. CLI `--out` publishes new draft summary/detail
+files exclusively and updates a managed index; existing reports are never
+replaced. MCP returns content only. Stage is independent of resolution, and
+custom sharing rules supplement built-in redaction. Human review remains
+required before sharing. See [validation](../internal/ledger/validation.go),
 [capture tests](../internal/incident/capture_test.go), and
 [report tests](../internal/report/report_test.go).
 

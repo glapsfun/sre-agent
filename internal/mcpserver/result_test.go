@@ -304,3 +304,31 @@ func TestTypedLedgerPayloadsAndResume(t *testing.T) {
 		t.Fatalf("resume bound %d sessions", sessions)
 	}
 }
+
+func TestInvestigationMetadataSchemaAndGate(t *testing.T) {
+	repo := seededRepo(t, "uncertain")
+	cs := connectTest(t, New(Dependencies{}))
+	update := ledger.MetadataUpdate{Investigation: &ledger.InvestigationUpdate{Number: 0, State: "start", Reason: "collect evidence", Checks: []string{"read metrics"}, EvidenceIDs: []string{}, Questions: []string{"source availability?"}}}
+	call := func(id string, wantError bool) {
+		t.Helper()
+		input, _ := json.Marshal(map[string]any{"repo": repo, "run_id": "run", "id": id, "kind": "metadata", "payload": update})
+		result := callTest(t, cs, "ledger_add", string(input))
+		if result.IsError != wantError {
+			t.Fatalf("unexpected round receipt: %s", resultJSON(t, result))
+		}
+	}
+	call("start", false)
+	call("start", false)
+	call("duplicate", true)
+	update.Investigation.State = "finish"
+	update.Investigation.Assessment = "no_useful_data"
+	call("finish", false)
+	input, _ := json.Marshal(map[string]any{"repo": repo, "run_id": "run"})
+	for _, tool := range []string{"run_resume", "report"} {
+		result := callTest(t, cs, tool, string(input))
+		raw := string(resultJSON(t, result))
+		if result.IsError || !strings.Contains(strings.ReplaceAll(raw, `\\`, ""), "no_useful_data") {
+			t.Fatalf("%s lost terminal state: %s", tool, raw)
+		}
+	}
+}

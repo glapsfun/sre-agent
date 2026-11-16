@@ -39,20 +39,22 @@ type Entry struct {
 }
 
 type MetadataUpdate struct {
-	Problem     *string      `json:"problem,omitempty"`
-	Phase       *int         `json:"phase,omitempty"`
-	Environment *Environment `json:"environment,omitempty"`
-	Tools       *Tools       `json:"tools,omitempty"`
-	Wave1       *Wave        `json:"wave1,omitempty"`
-	Wave2       *Wave        `json:"wave2,omitempty"`
-	Impact      *string      `json:"impact,omitempty"`
-	StartedAt   *time.Time   `json:"started_at,omitempty"`
-	Detection   *string      `json:"detection,omitempty"`
-	Links       *[]string    `json:"links,omitempty"`
-	SessionID   *string      `json:"session_id,omitempty"`
+	Investigation *InvestigationUpdate `json:"investigation,omitempty"`
+	Problem       *string              `json:"problem,omitempty"`
+	Phase         *int                 `json:"phase,omitempty"`
+	Environment   *Environment         `json:"environment,omitempty"`
+	Tools         *Tools               `json:"tools,omitempty"`
+	Wave1         *Wave                `json:"wave1,omitempty"`
+	Wave2         *Wave                `json:"wave2,omitempty"`
+	Impact        *string              `json:"impact,omitempty"`
+	StartedAt     *time.Time           `json:"started_at,omitempty"`
+	Detection     *string              `json:"detection,omitempty"`
+	Links         *[]string            `json:"links,omitempty"`
+	SessionID     *string              `json:"session_id,omitempty"`
 }
 
 type Evidence struct {
+	Gap        string     `json:"gap,omitempty"`
 	Fact       string     `json:"fact"`
 	Source     string     `json:"source"`
 	ObservedAt *time.Time `json:"observed_at,omitempty"`
@@ -188,23 +190,24 @@ type Run struct {
 }
 
 type State struct {
-	Phase            int         `json:"phase"`
-	Environment      Environment `json:"environment"`
-	Tools            Tools       `json:"tools"`
-	Wave1            Wave        `json:"wave1"`
-	Wave2            Wave        `json:"wave2"`
-	Impact           string      `json:"impact"`
-	Detection        string      `json:"detection"`
-	StartedAt        *time.Time  `json:"started_at"`
-	Links            []string    `json:"links"`
-	Evidence         []Entry     `json:"evidence"`
-	Hypotheses       []Entry     `json:"hypotheses"`
-	Options          []Entry     `json:"options"`
-	Approvals        []Entry     `json:"approvals"`
-	Actions          []Entry     `json:"actions"`
-	Validations      []Entry     `json:"validations"`
-	SafetyViolations []Entry     `json:"safety_violations"`
-	Expected         *Entry      `json:"expected"`
+	Investigation    *InvestigationState `json:"investigation,omitempty"`
+	Phase            int                 `json:"phase"`
+	Environment      Environment         `json:"environment"`
+	Tools            Tools               `json:"tools"`
+	Wave1            Wave                `json:"wave1"`
+	Wave2            Wave                `json:"wave2"`
+	Impact           string              `json:"impact"`
+	Detection        string              `json:"detection"`
+	StartedAt        *time.Time          `json:"started_at"`
+	Links            []string            `json:"links"`
+	Evidence         []Entry             `json:"evidence"`
+	Hypotheses       []Entry             `json:"hypotheses"`
+	Options          []Entry             `json:"options"`
+	Approvals        []Entry             `json:"approvals"`
+	Actions          []Entry             `json:"actions"`
+	Validations      []Entry             `json:"validations"`
+	SafetyViolations []Entry             `json:"safety_violations"`
+	Expected         *Entry              `json:"expected"`
 }
 
 type ValidationSummary struct {
@@ -401,6 +404,11 @@ func validatePayload(payload any) error {
 	var times []*time.Time
 	switch value := payload.(type) {
 	case *MetadataUpdate:
+		if value.Investigation != nil {
+			if err := validateInvestigation(*value.Investigation); err != nil {
+				return err
+			}
+		}
 		if *value == (MetadataUpdate{}) {
 			return errors.New("metadata update must supply at least one field")
 		}

@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf 'Bun CI setup: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'requires GITHUB_ACTIONS=true; no changes made.'
+[[ "$(uname -s)" == Linux ]] || fail 'requires Linux; no changes made.'
+runner_uid="$(id -u)"
+[[ "$runner_uid" != 0 ]] || fail 'requires an unprivileged runner user.'
+[[ -n "${GITHUB_ENV:-}" && -f "$GITHUB_ENV" && ! -L "$GITHUB_ENV" && -w "$GITHUB_ENV" ]] \
+  || fail 'requires a regular writable GITHUB_ENV file.'
+[[ "$(stat -c %u "$GITHUB_ENV")" == "$runner_uid" ]] || fail 'GITHUB_ENV has a different owner.'
+[[ -d /run/systemd/system ]] || fail 'requires systemd as the host service manager.'
+[[ -f /sys/fs/cgroup/cgroup.controllers ]] || fail 'requires cgroup v2.'
+
+has_controllers() {
+  local available=" $1 " controller
+  for controller in cpu memory pids; do
+    [[ "$available" == *" $controller "* ]] || return 1
+  done
+}
+has_controllers "$(cat /sys/fs/cgroup/cgroup.controllers)" || fail 'host lacks cpu/memory/pids controllers.'
+
+missing_packages=()
+for package in bubblewrap util-linux dbus-user-session; do
+  if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+    missing_packages+=("$package")
+  fi
+done
+if ((${#missing_packages[@]})); then
+  sudo -n apt-get update
+  sudo -n apt-get install -y --no-install-recommends "${missing_packages[@]}"
+fi
+for tool in bun bwrap prlimit systemctl systemd-run; do
+  command -v "$tool" >/dev/null || fail "missing $tool after setup."
+done
+[[ "$(bun --version)" == 1.4.2 ]] || fail 'requires Bun 1.4.2.'
+bwrap_help="$(bwrap --help)"
+for flag in --size --unshare-all --unshare-user --unshare-cgroup --seccomp --clearenv --remount-ro; do
+  [[ "$bwrap_help" == *"$flag "* ]] || fail "installed bubblewrap lacks $flag."
+done
+bwrap --version
+prlimit --version
+
+if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns &&
+  "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 1 ]]; then
+  loaded_profiles="$(sudo -n cat /sys/kernel/security/apparmor/profiles)"
+  if ! grep -Fxq 'bwrap (enforce)' <<<"$loaded_profiles" \
+    || ! grep -Fxq 'unpriv_bwrap (enforce)' <<<"$loaded_profiles"; then
+    [[ "$(realpath -e "$(command -v bwrap)")" == /usr/bin/bwrap ]] \
+      || fail 'the distro AppArmor profile requires /usr/bin/bwrap.'
+    if grep -Eq '^(bwrap|unpriv_bwrap)( |//)' <<<"$loaded_profiles"; then
+      fail 'existing bubblewrap AppArmor policy is incomplete or not enforcing; refusing to replace it.'
+    fi
+    [[ ! -e /etc/apparmor.d/bwrap-userns-restrict && ! -L /etc/apparmor.d/bwrap-userns-restrict ]] \
+      || fail 'an unloaded bubblewrap AppArmor configuration already exists; refusing to override it.'
+    if [[ "$(dpkg-query -W -f='${Status}' apparmor-profiles 2>/dev/null || true)" != 'install ok installed' ]]; then
+      sudo -n apt-get update
+      sudo -n apt-get install -y --no-install-recommends apparmor-profiles
+    fi
+    profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+    [[ -f "$profile" && ! -L "$profile" && "$(stat -c %u "$profile")" == 0 ]] \
+      || fail 'the official restrictive bubblewrap AppArmor profile is unavailable.'
+    [[ "$(apparmor_parser --base /etc/apparmor.d --skip-cache --names "$profile" | sort)" == $'bwrap\nunpriv_bwrap' ]] \
+      || fail 'unexpected profile names in the distro bubblewrap policy.'
+    # Load only the distro policy: bwrap can set up namespaces, but children lose capabilities.
+    sudo -n apparmor_parser --base /etc/apparmor.d --skip-cache --add "$profile"
+    loaded_profiles="$(sudo -n cat /sys/kernel/security/apparmor/profiles)"
+    if ! grep -Fxq 'bwrap (enforce)' <<<"$loaded_profiles" \
+      || ! grep -Fxq 'unpriv_bwrap (enforce)' <<<"$loaded_profiles"; then
+      fail 'restrictive bubblewrap AppArmor profiles are not enforcing.'
+    fi
+  fi
+fi
+
+probe_since="$(date --iso-8601=seconds)"
+if ! env -i "$(command -v bwrap)" --unshare-all --unshare-user --unshare-cgroup \
+  --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind / / -- /usr/bin/true; then
+  # Preserve failure evidence without broadening the installed policy.
+  uname -srmo
+  printf 'bubblewrap path: %s\n' "$(realpath -e "$(command -v bwrap)")"
+  for package in bubblewrap apparmor apparmor-profiles; do
+    if ! dpkg-query -W -f='${Package} ${Version} ${Status}\n' "$package"; then
+      printf 'Package metadata unavailable: %s\n' "$package"
+    fi
+  done
+  for setting in /sys/module/apparmor/parameters/enabled \
+    /proc/sys/kernel/apparmor_restrict_unprivileged_userns \
+    /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
+    if [[ -r "$setting" ]]; then
+      printf '%s: %s\n' "$setting" "$(cat "$setting")"
+    else
+      printf 'Setting unavailable: %s\n' "$setting"
+    fi
+  done
+  printf '%s\n' 'Loaded bubblewrap and unprivileged-userns AppArmor profiles:'
+  if ! sudo -n cat /sys/kernel/security/apparmor/profiles \
+    | grep -E '^(bwrap|unpriv_bwrap|unprivileged_userns)( |//)'; then
+    printf '%s\n' 'No matching loaded profiles, or profile listing unavailable.'
+  fi
+  for profile in /etc/apparmor.d/bwrap-userns-restrict \
+    /usr/share/apparmor/extra-profiles/bwrap-userns-restrict; do
+    if [[ -f "$profile" ]]; then
+      printf 'Profile source: %s\n' "$profile"
+      cat "$profile"
+    else
+      printf 'Profile source unavailable: %s\n' "$profile"
+    fi
+  done
+  printf '%s\n' 'Kernel AppArmor records from the failed startup probe:'
+  if ! sudo -n journalctl --dmesg --since "$probe_since" --no-pager --output=cat \
+    | grep -E 'apparmor=.*(comm="bwrap"|profile="(bwrap|unpriv_bwrap|unprivileged_userns)")'; then
+    printf '%s\n' 'No matching kernel records, or kernel journal unavailable.'
+  fi
+  fail 'isolated bubblewrap startup failed; no further policy changes attempted.'
+fi
+
+runtime_unit="user-runtime-dir@${runner_uid}.service"
+manager_unit="user@${runner_uid}.service"
+runtime_dir="/run/user/${runner_uid}"
+for unit in "$runtime_unit" "$manager_unit"; do
+  if ! systemctl is-active --quiet "$unit"; then
+    sudo -n systemctl start "$unit"
+  fi
+done
+
+delegated="$(systemctl show "$manager_unit" --property=DelegateControllers --value)"
+if ! has_controllers "$delegated"; then
+  # Restart only this CI user's manager, and never the cgroup running this job.
+  if grep -Fq "/${manager_unit}" /proc/self/cgroup; then
+    fail 'cannot restart the user manager containing this job.'
+  fi
+  drop_in_dir="/run/systemd/system/${manager_unit}.d"
+  drop_in="${drop_in_dir}/90-sre-bun-ci.conf"
+  drop_in_text=$'[Service]\nDelegate=cpu memory pids'
+  if [[ -e "$drop_in" || -L "$drop_in" ]]; then
+    [[ -f "$drop_in" && ! -L "$drop_in" && "$(cat "$drop_in")" == "$drop_in_text" ]] \
+      || fail "refusing to overwrite $drop_in."
+  else
+    sudo -n install -d -m 0755 "$drop_in_dir"
+    printf '%s\n' "$drop_in_text" | sudo -n tee "$drop_in" >/dev/null
+  fi
+  sudo -n systemctl daemon-reload
+  sudo -n systemctl restart "$manager_unit"
+fi
+
+[[ -d "$runtime_dir" && ! -L "$runtime_dir" && "$(realpath -e "$runtime_dir")" == "$runtime_dir" ]] \
+  || fail 'invalid user runtime directory.'
+[[ "$(stat -c %u "$runtime_dir")" == "$runner_uid" && "$(stat -c %a "$runtime_dir")" == 700 ]] \
+  || fail 'user runtime directory ownership or mode is unsafe.'
+export XDG_RUNTIME_DIR="$runtime_dir"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus"
+if ((${#missing_packages[@]})); then
+  systemctl --user daemon-reload
+fi
+if ! systemctl --user is-active --quiet dbus.socket; then
+  systemctl --user start dbus.socket
+fi
+[[ -S "$runtime_dir/bus" && ! -L "$runtime_dir/bus" && "$(realpath -e "$runtime_dir/bus")" == "$runtime_dir/bus" ]] \
+  || fail 'invalid user bus socket path.'
+[[ "$(stat -c %u "$runtime_dir/bus")" == "$runner_uid" ]] || fail 'user bus socket has a different owner.'
+systemctl --user show --property=Version --value
+
+has_controllers "$(systemctl show "$manager_unit" --property=DelegateControllers --value)" \
+  || fail 'user manager lacks cpu/memory/pids delegation.'
+manager_group="$(systemctl show "$manager_unit" --property=ControlGroup --value)"
+[[ "$manager_group" == "/user.slice/user-${runner_uid}.slice/${manager_unit}" ]] \
+  || fail 'unexpected user manager cgroup path.'
+has_controllers "$(cat "/sys/fs/cgroup${manager_group}/cgroup.controllers")" \
+  || fail 'cpu/memory/pids controllers are unavailable in the user manager cgroup.'
+
+for setting in "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"; do
+  if ! grep -Fxq "$setting" "$GITHUB_ENV"; then
+    printf '%s\n' "$setting" >>"$GITHUB_ENV"
+  fi
+done
+printf '%s\n' 'Bun CI prerequisites prepared; required runtime tests verify effective isolation and limits.'

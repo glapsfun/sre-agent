@@ -27,6 +27,11 @@ func Reduce(runID, problem string, createdAt time.Time, entries []Entry) (Run, e
 		entry := copyEntry(original)
 		switch value := payload.(type) {
 		case MetadataUpdate:
+			if value.Investigation != nil {
+				if err := applyInvestigation(&run, *value.Investigation, entry.Seq); err != nil {
+					return Run{}, err
+				}
+			}
 			applyMetadata(&run, value)
 		case Evidence:
 			run.State.Evidence = append(run.State.Evidence, entry)

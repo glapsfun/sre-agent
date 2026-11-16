@@ -8,7 +8,8 @@ description: Use when the user reports an operational problem or incident — po
 Act as an experienced SRE assisting a human engineer. Drive incidents through a
 TDD-inspired loop: collect evidence before conclusions, define expected behavior
 before fixing, get explicit approval before changing anything, validate against
-the expected behavior after changing, and iterate until resolved.
+the expected behavior after changing, and preserve uncertainty when the bounded
+investigation stops without resolution.
 
 ## Safety rules (non-negotiable)
 
@@ -206,15 +207,24 @@ SAFETY VIOLATION
   Changed: <object> <field> <before-hash> → <after-hash>  (or: HEAD <sha> → <sha>)
 ```
 
-A failed fix re-enters at Phase 3 with the ledger intact - record the failed
-hypothesis, never rediscover from scratch.
+A failed fix retains the ledger and the investigation budget. Record the failed
+hypothesis; return to Phase 3 only if another round is eligible. A stopped run
+requires an explicit operator decision about a new scope, never an automatic
+reset or a new run to bypass the limit.
 
 ## The loop
 
 ### Phase 0 — Bootstrap context
 
+First run `sre sources list --repo <repository>` and read
+`references/approved-sources.md`. If approvals are missing, ask about known
+sources and obtain explicit scout consent before inspecting configs or probing
+access. Reuse approved sources later without automatic scouting. Every new scout
+and every saved selection needs separate approval. Keep unavailable-source gaps.
+
 Before scoping, load prior knowledge. If `docs/sre-agent-memo.md` exists: read
-it, run the **fast freshness check** in `references/project-memo.md` (contexts,
+it, and only after scout approval run the **fast freshness check** in
+`references/project-memo.md` (contexts,
 namespaces, service-map workloads, obs endpoints), and seed the ledger's
 `Environment:` line from memo facts that pass — stamped `✓ verified <today>`.
 The `Tools:` line records local CLI availability, which the memo does **not**
@@ -239,6 +249,12 @@ recall, map the symptom onto the canonical signature classes in
 vocabulary).
 
 ### Phase 2 — Discover
+
+Use the consent-bound source scout in `references/approved-sources.md` to
+inventory integrations and present selected tools for approval. All discovery
+and freshness procedures below require that explicit scout consent. On reuse,
+skip them and use approved sources; unavailable access is a gap, not permission
+to scout again. Registry operations remain orchestrator-only.
 
 On a **cold start** (no memo), prefer `sre discover --timeout 10s`. Use
 `bash scripts/sre discover --timeout 10s` when the installed skill provides
@@ -329,6 +345,15 @@ once the investigation has populated the service map. See Phase 6.
 
 ### Phase 3 — Collect evidence
 
+Before dispatching any evidence wave, read the stored investigation state.
+Record metadata `investigation` start for round 0 on first collection, using
+the exact payload in `references/root-cause-analysis.md`, and wait for a
+successful ledger receipt. An interrupted active round resumes with its existing
+checks and budget; do not start it again. Both initial triage waves belong to
+round 0. Subsequent focused collection uses rounds 1 through 4 only. A terminal
+stop forbids another collection round for this run. A rejected or uncertain
+start must not dispatch collectors; retry only its original entry ID/payload.
+
 The seven investigator playbooks live in `references/investigators/` (see
 table). Each produces a findings block; merge every findings block into the
 ledger. Two execution paths:
@@ -413,7 +438,18 @@ For quick triage on either path, `scripts/sre-evidence.sh <namespace>
 
 Read `references/root-cause-analysis.md`. Build the incident timeline, rank
 hypotheses (changes-before-symptoms first), and record confidence per
-hypothesis. Define **expected behavior** — measurable criteria the fix must
+hypothesis. Keep every plausible alternative, its support and contradictions,
+and its next discriminating check. After all scoped gathering and synthesis,
+finish the active round with its performed
+checks, evidence IDs, assessment and unresolved questions. Wait for the receipt
+before choosing another round. Stop on sufficient evidence or no useful new
+information; otherwise collect only focused read-only checks in the next
+eligible round, up to four additional rounds. Never infer a confirmed cause
+from exhaustion. Report remaining uncertainty and possible resolutions with
+risks when stopped. These are recommendations, not permission to execute them.
+All evidence queries below belong to an active round. After finishing it, do
+not issue more collection queries without the next eligible start receipt.
+Define **expected behavior** as measurable criteria the fix must
 satisfy (e.g. "error rate < 1%, p99 < 300ms, restarts = 0 over 15 min").
 These become Phase 6's validation checklist. Research fixes: repository
 runbooks/docs first, then the pinned official docs listed in
@@ -473,7 +509,8 @@ Read `references/remediation.md`. Present 2–4 options using its template
 (description, steps, risk, pros, cons, expected impact, rollback plan) as a
 structured question the user answers by picking one (use AskUserQuestion when
 available). **Stop. Do not run any mutating command until the user
-selects an option.** "Investigate more" is always a valid option to offer.
+selects an option.** Offer "Investigate more" only within the remaining round
+budget. If stopped, explain the gaps and ask about an explicitly new scope.
 
 ### Phase 6 — Apply, validate, iterate
 
@@ -484,7 +521,8 @@ Then dry-run → show → apply → watch rollout, with every command pinned to 
 target. Then verify every expected-behavior criterion from Phase 4 with live
 evidence (metrics queries, log checks, pod state). All pass → write the final
 report (format in `references/validation-and-reporting.md`). Any fail →
-record the failed hypothesis in the ledger and return to Phase 3. If
+record the failed hypothesis and check the stored budget before returning to
+Phase 3; a terminal stop remains terminal. If
 validation is impossible (e.g. no metrics access), report the fix as
 **applied but unverified** — never claim resolution without evidence.
 
@@ -550,6 +588,7 @@ Always record missing capability in the ledger; never silently skip.
 
 | File | Read when |
 | :--- | :--- |
+| `references/approved-sources.md` | First/repeat source scouting, explicit selections, provider read-only access and collection receipts |
 | `references/discovery.md` | Phase 2 — interpreting discovery output, manual endpoint hunting, port-forward patterns |
 | `references/project-memo.md` | Phase 0 bootstrap + Phase 6 end-of-run write-back — memo schema, fast freshness check, update rules, changelog/discovery-history conventions |
 | `references/incident-memory.md` | Phase 4 recall + Phase 6 capture — incident signature, index/recall recipe, capture rules |

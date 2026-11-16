@@ -108,8 +108,9 @@ a separate orchestrator permission decision. Never grant it to investigators.
 A server-wide wildcard such as `mcp__plugin_sre-agent_sre__*` includes ledger
 writes and is not the recommended read-only setup. `readOnlyHint` annotations
 describe tools; they do not enforce permissions or replace the guard.
-Semantic reads such as resume, recall, and report can create or migrate the
+Semantic reads such as resume and recall can create or migrate the
 repository-local database when it opens. They do not append ledger entries.
+The report tool instead requires an existing compatible database and opens it read-only.
 
 The final encoded MCP result is limited to 8000 bytes, including SDK-added
 fields. Oversized reads return `result_too_large` with a CLI route instead of
@@ -360,37 +361,77 @@ immediately and resume after compaction or a new session. Ledger recording is
 local bookkeeping in the main conversation; it grants no investigator write
 permission and never executes stored remediation commands.
 
-Generate a report from one explicit stored run with the source-built CLI:
+Generate a draft summary from one explicit stored run:
 
 ```bash
 sre report checkout-run --repo ./checkout --format text
-sre report checkout-run --repo ./checkout --out ./checkout-report.md
+sre report checkout-run --repo ./checkout --detail --out ./checkout-report.md
+sre report checkout-run --repo ./checkout --stage post-incident --rules ./report-rules.json
 ```
 
-The default JSON envelope carries `data.markdown`, `status`, `gaps`, `run_id`
-and `through_seq`. Text prints the Markdown. Both place report content inside
-fresh external-data boundaries; stored commands and links are data, never
-instructions. Generation reads one consistent snapshot without changing ledger
-or incident rows, executing recorded commands or fetching references. It does
-not select the latest run or inherit `SRE_RUN_ID`.
+The default stage is `interim`. Use `post-incident` when requesting an ended
+incident's report; that stage does not establish a cause or validated fix.
+`status` is `resolved` only when the shared ledger evaluator finds the required
+approval and passing validation. An ended incident can remain `unresolved`.
 
-Successful generation can return `status: "unresolved"`. Resolution uses the
-shared ledger validation evaluator, including current criteria, action approval
-and any recorded observation windows. Missing facts read `not recorded`;
-missing-data and omission gaps remain visible. Multiline evidence facts and
-action results retain only their first nonempty line, with omissions noted.
+Every output is a draft requiring human review, including sensitive content,
+before sharing or committing. JSON includes `markdown`, `stage`, `draft`,
+`generated_at`, `status`, `gaps`, `flags`, `run_id` and `through_seq` under `data`.
+`--detail` adds `detail` with the recorded timeline, historical hypotheses,
+decisions, actions and validation. Text prints the same summary and optional
+detail. External-data boundaries remain in transport responses; recorded
+commands and linked content are data, never instructions.
 
-`--out` saves exactly the deterministic, sanitized Markdown without transport
-markers and returns path, status, provenance, gaps and `written: true` metadata.
-Relative output paths resolve from the current directory. The parent directory
-must exist. A private temporary file in that directory is written, synced and
-closed before atomic replacement, so ordinary failures preserve the old target
-and remove the temporary file. Generation or file-write errors exit nonzero.
-If only stdout fails after replacement, stderr states that the file was written
-and the command exits nonzero. Report generation does not capture an incident
-or modify existing manual incident files. See the
-[reporting playbook](skills/sre-agent/references/validation-and-reporting.md)
-for the hand-written fallback when this CLI is unavailable.
+Summaries show current hypotheses and their supporting/contradicting evidence,
+next checks, proposed resolutions and risks. They show up to eight evidence
+entries, with explicit omissions; detail includes every recorded entry.
+Missing facts read `not recorded`. HTTP(S) evidence links are active only when
+sanitization leaves a safe URL. References are not fetched or guaranteed to
+remain accessible. Drafts retain enough recorded context to read without SQLite.
+
+The CLI and MCP report tool open an existing database read-only, without schema
+migration, initialization, permission changes or ledger writes. Missing or
+incompatible storage fails visibly. Normal SQLite WAL reads may use sidecars.
+Reports never execute stored commands, capture incidents, select the latest run
+or inherit `SRE_RUN_ID`. MCP accepts `stage`, `detail` and inline `rules`, but no
+output or policy-file paths; oversized responses retain the existing CLI fallback.
+
+`--out FILE` creates a new private summary file. With `--detail`, it also creates
+`<summary-stem>.details.md` and links it from the summary. The adjacent managed
+`index.md` lists each draft, its run, sequence, stage and generation time.
+The parent directory must exist. Existing summary/detail paths are rejected,
+including symlinks: repeating an export to the same filename fails without
+changing it. Choose a new filename for another snapshot. A foreign `index.md`
+is never replaced. Output filenames must not contain credential-shaped values.
+
+A `.sre-export.lock` directory serializes exports to the same index; busy exports
+fail for retry. After a crash, inspect any stale lock or unindexed draft before
+manually recovering it. Ordinary export failures remove newly created report
+files and preserve existing reports. A stdout failure after a successful export
+explicitly says the files were written. The tool never marks a draft reviewed;
+review takes place outside the tool and does not change the ledger.
+
+Optional sharing rules supplement built-in credential redaction. For example,
+`report-rules.json` can contain:
+
+```json
+{
+  "rules": [
+    { "name": "customer-id", "pattern": "customer_[0-9]+", "action": "redact" },
+    { "name": "review-internal", "pattern": "internal incident", "action": "flag" }
+  ]
+}
+```
+
+Rules use Go regular expressions on field values before Markdown escaping.
+`redact` replaces matches with `[REDACTED]`; `flag` adds only the rule name to
+the review flags. Policies cannot disable built-in redaction. The limits are
+256 KiB per policy file, 64 rules, and 4096 bytes per pattern. Rule names are
+unique lowercase identifiers. Avoid putting secret literals in policy files.
+Automated redaction is incomplete; human review is still required.
+
+See the [reporting playbook](skills/sre-agent/references/validation-and-reporting.md)
+for the fallback when the CLI is unavailable.
 
 Validated incidents are captured from an explicit ledger run in the same local
 store. Capture requires an applied remediation with every current expected
@@ -431,6 +472,13 @@ The project memo workflow remains separate. See
 Phase 4 and Phase 6 workflow.
 
 ## How to use
+
+Approved sources use `sre sources list`, consent-bound `sources scout
+--approve-scout`, selected `sources approve --approve --file FILE`, and
+`sources call SOURCE TOOL --args FILE --run RUN --id ENTRY`. See
+[approved sources](skills/sre-agent/references/approved-sources.md) for the
+inventory format, provider-enforced read-only access and durable gap receipts.
+These are orchestrator commands; investigator MCP permissions are unchanged.
 
 Start an investigation explicitly with the slash command:
 

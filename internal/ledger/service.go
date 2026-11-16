@@ -210,6 +210,8 @@ func identityField(owner reflect.Type, name string) bool {
 	switch owner {
 	case reflect.TypeFor[MetadataUpdate]():
 		return name == "SessionID"
+	case reflect.TypeFor[InvestigationUpdate]():
+		return name == "EvidenceIDs"
 	case reflect.TypeFor[Hypothesis]():
 		return oneOf(name, "Supporting", "Contradicting", "Supersedes")
 	case reflect.TypeFor[Criterion]():
@@ -333,6 +335,15 @@ func appendPrepared(ctx context.Context, conn *sql.Conn, prepared preparedEntry)
 	if err := checkStoredValidation(ctx, conn, entry, prepared.payload); err != nil {
 		return Entry{}, err
 	}
+	if metadata, ok := prepared.payload.(MetadataUpdate); ok && metadata.Investigation != nil {
+		// Validate the complete history before committing the reserved sequence.
+		if _, err := LoadRun(ctx, conn, entry.RunID); err != nil {
+			if errors.Is(err, ErrCorrupt) {
+				return Entry{}, ErrInvalidInvestigation
+			}
+			return Entry{}, err
+		}
+	}
 	if metadata, ok := prepared.payload.(MetadataUpdate); ok && metadata.SessionID != nil {
 		if _, err := conn.ExecContext(ctx, "INSERT INTO run_sessions(session_id,run_id) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET run_id=excluded.run_id", *metadata.SessionID, entry.RunID); err != nil {
 			return Entry{}, err
@@ -396,6 +407,10 @@ func payloadReferences(payload any) []ledgerReference {
 		}
 	}
 	switch p := payload.(type) {
+	case MetadataUpdate:
+		if p.Investigation != nil {
+			add(KindEvidence, "investigation-evidence", p.Investigation.EvidenceIDs...)
+		}
 	case Hypothesis:
 		add(KindEvidence, "support", p.Supporting...)
 		add(KindEvidence, "contradiction", p.Contradicting...)
@@ -634,7 +649,7 @@ func ledgerError(ctx context.Context, operation string, err error) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("ledger %s: %w", operation, ctx.Err())
 	}
-	for _, known := range []error{context.Canceled, context.DeadlineExceeded, ErrNotFound, ErrConflict, ErrInvalidReference, ErrInvalidValidation, ErrCorrupt} {
+	for _, known := range []error{context.Canceled, context.DeadlineExceeded, ErrNotFound, ErrConflict, ErrInvalidReference, ErrInvalidValidation, ErrInvalidInvestigation, ErrCorrupt} {
 		if errors.Is(err, known) {
 			return fmt.Errorf("ledger %s: %w", operation, known)
 		}
