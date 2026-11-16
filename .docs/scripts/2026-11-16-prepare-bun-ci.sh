@@ -45,6 +45,48 @@ done
 bwrap --version
 prlimit --version
 
+probe_since="$(date --iso-8601=seconds)"
+if ! env -i "$(command -v bwrap)" --unshare-all --unshare-user --unshare-cgroup \
+  --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind / / -- /usr/bin/true; then
+  # Keep policy unchanged until the hosted kernel identifies the denied operation.
+  uname -srmo
+  printf 'bubblewrap path: %s\n' "$(realpath -e "$(command -v bwrap)")"
+  for package in bubblewrap apparmor apparmor-profiles; do
+    if ! dpkg-query -W -f='${Package} ${Version} ${Status}\n' "$package"; then
+      printf 'Package metadata unavailable: %s\n' "$package"
+    fi
+  done
+  for setting in /sys/module/apparmor/parameters/enabled \
+    /proc/sys/kernel/apparmor_restrict_unprivileged_userns \
+    /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
+    if [[ -r "$setting" ]]; then
+      printf '%s: %s\n' "$setting" "$(cat "$setting")"
+    else
+      printf 'Setting unavailable: %s\n' "$setting"
+    fi
+  done
+  printf '%s\n' 'Loaded bubblewrap and unprivileged-userns AppArmor profiles:'
+  if ! sudo -n cat /sys/kernel/security/apparmor/profiles \
+    | grep -E '^(bwrap|unpriv_bwrap|unprivileged_userns)( |//)'; then
+    printf '%s\n' 'No matching loaded profiles, or profile listing unavailable.'
+  fi
+  for profile in /etc/apparmor.d/bwrap-userns-restrict \
+    /usr/share/apparmor/extra-profiles/bwrap-userns-restrict; do
+    if [[ -f "$profile" ]]; then
+      printf 'Profile source: %s\n' "$profile"
+      cat "$profile"
+    else
+      printf 'Profile source unavailable: %s\n' "$profile"
+    fi
+  done
+  printf '%s\n' 'Kernel AppArmor records from the failed startup probe:'
+  if ! sudo -n journalctl --dmesg --since "$probe_since" --no-pager --output=cat \
+    | grep -E 'apparmor=.*(comm="bwrap"|profile="(bwrap|unpriv_bwrap|unprivileged_userns)")'; then
+    printf '%s\n' 'No matching kernel records, or kernel journal unavailable.'
+  fi
+  fail 'isolated bubblewrap startup failed; policy was not changed.'
+fi
+
 runtime_unit="user-runtime-dir@${runner_uid}.service"
 manager_unit="user@${runner_uid}.service"
 runtime_dir="/run/user/${runner_uid}"
