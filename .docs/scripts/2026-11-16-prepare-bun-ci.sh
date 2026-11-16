@@ -45,10 +45,41 @@ done
 bwrap --version
 prlimit --version
 
+if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns &&
+  "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 1 ]]; then
+  loaded_profiles="$(sudo -n cat /sys/kernel/security/apparmor/profiles)"
+  if ! grep -Fxq 'bwrap (enforce)' <<<"$loaded_profiles" \
+    || ! grep -Fxq 'unpriv_bwrap (enforce)' <<<"$loaded_profiles"; then
+    [[ "$(realpath -e "$(command -v bwrap)")" == /usr/bin/bwrap ]] \
+      || fail 'the distro AppArmor profile requires /usr/bin/bwrap.'
+    if grep -Eq '^(bwrap|unpriv_bwrap)( |//)' <<<"$loaded_profiles"; then
+      fail 'existing bubblewrap AppArmor policy is incomplete or not enforcing; refusing to replace it.'
+    fi
+    [[ ! -e /etc/apparmor.d/bwrap-userns-restrict && ! -L /etc/apparmor.d/bwrap-userns-restrict ]] \
+      || fail 'an unloaded bubblewrap AppArmor configuration already exists; refusing to override it.'
+    if [[ "$(dpkg-query -W -f='${Status}' apparmor-profiles 2>/dev/null || true)" != 'install ok installed' ]]; then
+      sudo -n apt-get update
+      sudo -n apt-get install -y --no-install-recommends apparmor-profiles
+    fi
+    profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+    [[ -f "$profile" && ! -L "$profile" && "$(stat -c %u "$profile")" == 0 ]] \
+      || fail 'the official restrictive bubblewrap AppArmor profile is unavailable.'
+    [[ "$(apparmor_parser --base /etc/apparmor.d --skip-cache --names "$profile" | sort)" == $'bwrap\nunpriv_bwrap' ]] \
+      || fail 'unexpected profile names in the distro bubblewrap policy.'
+    # Load only the distro policy: bwrap can set up namespaces, but children lose capabilities.
+    sudo -n apparmor_parser --base /etc/apparmor.d --skip-cache --add "$profile"
+    loaded_profiles="$(sudo -n cat /sys/kernel/security/apparmor/profiles)"
+    if ! grep -Fxq 'bwrap (enforce)' <<<"$loaded_profiles" \
+      || ! grep -Fxq 'unpriv_bwrap (enforce)' <<<"$loaded_profiles"; then
+      fail 'restrictive bubblewrap AppArmor profiles are not enforcing.'
+    fi
+  fi
+fi
+
 probe_since="$(date --iso-8601=seconds)"
 if ! env -i "$(command -v bwrap)" --unshare-all --unshare-user --unshare-cgroup \
   --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind / / -- /usr/bin/true; then
-  # Keep policy unchanged until the hosted kernel identifies the denied operation.
+  # Preserve failure evidence without broadening the installed policy.
   uname -srmo
   printf 'bubblewrap path: %s\n' "$(realpath -e "$(command -v bwrap)")"
   for package in bubblewrap apparmor apparmor-profiles; do
@@ -84,7 +115,7 @@ if ! env -i "$(command -v bwrap)" --unshare-all --unshare-user --unshare-cgroup 
     | grep -E 'apparmor=.*(comm="bwrap"|profile="(bwrap|unpriv_bwrap|unprivileged_userns)")'; then
     printf '%s\n' 'No matching kernel records, or kernel journal unavailable.'
   fi
-  fail 'isolated bubblewrap startup failed; policy was not changed.'
+  fail 'isolated bubblewrap startup failed; no further policy changes attempted.'
 fi
 
 runtime_unit="user-runtime-dir@${runner_uid}.service"
