@@ -17,6 +17,7 @@ jobs:
   go:
     name: Go (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -38,6 +39,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.goos == 'linux'
+        with:
+          bun-version: "1.4.2"
+      - name: Prepare Linux Bun sandbox
+        if: matrix.goos == 'linux'
+        timeout-minutes: 5
+        run: bash .docs/scripts/2026-11-16-prepare-bun-ci.sh
       - name: Check installed kubectl readiness
         timeout-minutes: 1
         run: |
@@ -52,6 +61,12 @@ jobs:
         run: |
           go vet ./...
           go test ./...
+      - name: Required Linux Bun runtime and CLI tests
+        if: matrix.goos == 'linux'
+        timeout-minutes: 10
+        env:
+          SRE_REQUIRE_BUN_RUNTIME: "1"
+        run: go test -count=1 -p=1 -timeout=8m ./internal/coderuntime ./internal/cli
       - name: Build and run version
         env:
           CGO_ENABLED: "0"
