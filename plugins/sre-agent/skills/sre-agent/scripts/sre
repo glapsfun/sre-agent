@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=v0.17.0
+version=v0.18.0
 base_url="https://github.com/glapsfun/sre-agent/releases/download/$version"
 
 fail() {

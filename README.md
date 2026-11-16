@@ -37,7 +37,7 @@ fixtures have been exercised. Gemini, Copilot, and VS Code packaging have
 separate verification limitations documented there.
 
 You can also use the CLI without an agent host. The bundled launcher at
-`plugins/sre-agent/skills/sre-agent/scripts/sre` downloads the pinned `v0.17.0`
+`plugins/sre-agent/skills/sre-agent/scripts/sre` downloads the pinned `v0.18.0`
 binary for Linux or macOS on amd64 or arm64 and checks its SHA-256 before every
 execution. It needs Bash, curl for the first download, and OpenSSL, sha256sum,
 or shasum. A verified cached binary works offline. See
