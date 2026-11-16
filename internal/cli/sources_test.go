@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -254,6 +255,29 @@ func TestSourcesCLICallRecordsSuccessAndFailureGaps(t *testing.T) {
 	if code := runSources([]string{"call", "metrics", "read", "--repo", root, "--run", "run", "--id", "success", "--args", "-"}, strings.NewReader("{}"), ledgerBrokenWriter{}, &stderr, nil); code != 1 || !strings.Contains(stderr.String(), "committed for run run entry success") {
 		t.Fatal("output failure lost receipt", stderr.String())
 	}
+	for _, format := range []string{"json", "text"} {
+		receipt, gaps, err := executeSources(t.Context(), sourceOptions{command: "call", repo: root, source: "metrics", tool: "read", run: "run", id: "success", args: "-"}, strings.NewReader("{}"), sources.Service{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gaps = append(gaps, strings.Repeat("x", 2<<20))
+		var output bytes.Buffer
+		if code := presentSources(format, receipt, gaps, nil, &output, &stderr); code != 1 || output.Len() > 2<<20 {
+			t.Fatal("receipt presentation did not fail within budget", code, output.Len())
+		}
+		var presented struct {
+			Data sourceOutput `json:"data"`
+		}
+		if err := json.Unmarshal(output.Bytes(), &presented); err != nil {
+			t.Fatal(err)
+		}
+		if !presented.Data.Committed || !presented.Data.Replayed || presented.Data.RunID != "run" || presented.Data.EntryID != "success" || presented.Data.Seq != 1 {
+			t.Fatal("durable receipt identity lost", presented.Data)
+		}
+		if code, _, raw := sourceCLI(t, root, "{}", "call", "metrics", "read", "--run", presented.Data.RunID, "--id", presented.Data.EntryID, "--args", "-"); code != 0 || !strings.Contains(raw, `"replayed":true`) || calls.Load() != 1 {
+			t.Fatal("presentation failure lost replay or repeated collection", code, calls.Load(), raw)
+		}
+	}
 	clockCalls := 0
 	result, gaps, err := executeSources(t.Context(), sourceOptions{command: "call", repo: root, source: "metrics", tool: "read", run: "run", id: "unrecorded", args: "-"}, strings.NewReader("{}"), sources.Service{Now: func() time.Time {
 		clockCalls++
@@ -281,5 +305,133 @@ func TestSourcesCLICallRecordsSuccessAndFailureGaps(t *testing.T) {
 	value, err := ledger.DecodePayload(ledger.KindEvidence, run.State.Evidence[1].Payload)
 	if err != nil || value.(ledger.Evidence).Gap == "" || strings.Contains(string(run.State.Evidence[0].Payload), "queue_depth") {
 		t.Fatal("missing gap or raw response persisted", value, err)
+	}
+}
+
+func TestSourcesCLIScoutOutputBudget(t *testing.T) {
+	root := ledgerRepo(t)
+	var config strings.Builder
+	config.WriteString(`{"mcpServers":{`)
+	for i := 0; i < 35000; i++ {
+		if i != 0 {
+			config.WriteByte(',')
+		}
+		fmt.Fprintf(&config, `"s%d":{"command":"x"}`, i)
+	}
+	config.WriteString(`}}`)
+	if config.Len() > 1<<20 {
+		t.Fatal("fixture exceeds scout input limit")
+	}
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(config.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"json", "text"} {
+		t.Run(format, func(t *testing.T) {
+			code, env, raw := sourceCLI(t, root, "", "scout", "--approve-scout", "--format", format)
+			if code != 1 || env.OK || len(raw) > 2<<20 || len(env.Errors) == 0 {
+				t.Fatalf("unbounded scout presentation: code=%d ok=%v bytes=%d gaps=%d errors=%v", code, env.OK, len(raw), len(env.Gaps), env.Errors)
+			}
+		})
+	}
+}
+
+func TestSourcesCLIPartialScoutRemainsSuccessful(t *testing.T) {
+	root := ledgerRepo(t)
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(`{"mcpServers":{"logs":{"command":"x"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"json", "text"} {
+		code, env, raw := sourceCLI(t, root, "", "scout", "--approve-scout", "--format", format)
+		if code != 0 || !env.OK || len(env.Gaps) == 0 || !strings.Contains(raw, `"candidates"`) {
+			t.Fatal("partial scout changed semantics", code, raw)
+		}
+	}
+}
+
+func TestSourcesPresentationSavedApprovalRecovery(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		t.Run(format, func(t *testing.T) {
+			root := ledgerRepo(t)
+			input := `{"sources":[{"id":"logs","name":"Logs","kind":"mcp-stdio","reference":".mcp.json logs","tools":[]}]}`
+			saved, gaps, err := executeSources(t.Context(), sourceOptions{command: "approve", repo: root, approve: true, file: "-"}, strings.NewReader(input), sources.Service{})
+			if err != nil || !saved.Saved {
+				t.Fatal("approval not saved", err)
+			}
+			var stdout, stderr bytes.Buffer
+			if code := presentSources(format, saved, append(gaps, strings.Repeat("x", 2<<20)), nil, &stdout, &stderr); code != 1 || stdout.Len() > 2<<20 {
+				t.Fatal("approval presentation did not fail within budget", code, stdout.Len())
+			}
+			var presented struct {
+				Data sourceOutput `json:"data"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &presented); err != nil || !presented.Data.Saved {
+				t.Fatal("saved approval metadata lost", err)
+			}
+			registry, err := sources.Load(t.Context(), root)
+			if err != nil || len(registry.Sources) != 1 || registry.Sources[0].ID != "logs" {
+				t.Fatal("saved approval not recoverable", registry, err)
+			}
+			if code, _, raw := sourceCLI(t, root, "", "list"); code != 0 || !strings.Contains(raw, "Logs") {
+				t.Fatal("saved approval not listed", code, raw)
+			}
+		})
+	}
+}
+
+func TestSourcesPresentationBudgetPreservesMetadata(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		for _, kind := range []string{"result", "gaps", "encoding", "newline", "indentation"} {
+			t.Run(format+"/"+kind, func(t *testing.T) {
+				output := &sourceOutput{Saved: true, Committed: true, Replayed: true, RunID: "run", EntryID: "entry", Seq: 3}
+				gaps := []string{}
+				switch kind {
+				case "result":
+					output.Result = strings.Repeat("x", 2<<20)
+				case "gaps":
+					gaps = []string{strings.Repeat("x", 2<<20)}
+				case "encoding":
+					output.Result = json.RawMessage(`{`)
+				case "newline":
+					gaps = []string{""}
+					env := Envelope{OK: true, Data: output, Gaps: gaps, Errors: []string{}}
+					raw, _ := json.Marshal(env)
+					if format == "text" {
+						raw, _ = json.MarshalIndent(env, "", "  ")
+					}
+					gaps[0] = strings.Repeat("x", (2<<20)-len(raw))
+				case "indentation":
+					output.Result = make([]int, 300000)
+					compact, _ := json.Marshal(output.Result)
+					indented, _ := json.MarshalIndent(output.Result, "", "  ")
+					// Envelope nesting adds four spaces per item in text format.
+					if len(compact) >= 2<<20 || len(indented)+4*300000 <= 2<<20 {
+						t.Fatal("invalid indentation fixture")
+					}
+				}
+				var stdout, stderr bytes.Buffer
+				code := presentSources(format, output, gaps, nil, &stdout, &stderr)
+				wantFailure := kind != "indentation" || format == "text"
+				if !wantFailure {
+					if code != 0 {
+						t.Fatalf("compact result should fit: code=%d", code)
+					}
+					return
+				}
+				var got struct {
+					OK     bool         `json:"ok"`
+					Data   sourceOutput `json:"data"`
+					Errors []string     `json:"errors"`
+				}
+				if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if code != 1 || got.OK || stdout.Len() > 2<<20 || len(got.Errors) == 0 || got.Data.Result != nil || got.Data.Begin != "" || got.Data.Finish != "" {
+					t.Fatalf("presentation failure not bounded: code=%d ok=%v bytes=%d result_present=%v errors=%v", code, got.OK, stdout.Len(), got.Data.Result != nil, got.Errors)
+				}
+				if !got.Data.Saved || !got.Data.Committed || !got.Data.Replayed || got.Data.RunID != "run" || got.Data.EntryID != "entry" || got.Data.Seq != 3 {
+					t.Fatal("durable receipt metadata lost", got.Data)
+				}
+			})
+		}
 	}
 }

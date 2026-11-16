@@ -286,21 +286,72 @@ func TestActualRuntimeCollectNeverFallsBack(t *testing.T) {
 	}
 }
 
+func unrelatedProbeScope(t *testing.T) {
+	t.Helper()
+	ctx, session := actualSession(t)
+	phase, cancel := context.WithCancel(ctx)
+	entered, done := make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, err := session.Run(phase, collect.Invocation{Phase: "source", SourceID: "s", HostPort: "127.0.0.1:1", Keys: []collect.Key{{Key: "own", SourceID: "s", Tool: "read"}}, Program: `await collection.call("own");return [];`}, func(string) (sources.CallResult, error) {
+			close(entered)
+			<-phase.Done()
+			return sources.CallResult{}, phase.Err()
+		})
+		done <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("unrelated scope cancellation: %v", err)
+		}
+	})
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func recordProbeUnit(t *testing.T, root string) string {
+	t.Helper()
+	launcher, err := exec.LookPath("systemd-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "probe-unit")
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+	script := "#!/bin/sh\nprevious=\nfor arg in \"$@\"; do\n if [ \"$previous\" = --unit ]; then printf '%s\\n' \"$arg\" > " + quote(path) + "; break; fi\n previous=$arg\ndone\nexec " + quote(launcher) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(root, "systemd-run"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
+}
+
+func probeScopePath(unitFile string) (string, error) {
+	raw, err := os.ReadFile(unitFile)
+	if err != nil {
+		return "", err
+	}
+	unit := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(unit, "sre-bun-") || !strings.HasSuffix(unit, ".scope") || filepath.Base(unit) != unit {
+		return "", errors.New("invalid recorded Probe unit")
+	}
+	return filepath.Join(fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/app.slice", os.Getuid(), os.Getuid()), unit, "cgroup.procs"), nil
+}
+
 func TestActualCanceledProbeState(t *testing.T) {
 	if os.Getenv("SRE_REQUIRE_BUN_RUNTIME") != "1" && os.Getenv("SRE_TEST_BUN_RUNTIME") != "1" {
 		t.Skip("opt in")
 	}
+	unrelatedProbeScope(t)
 	root := t.TempDir()
+	unitFile := recordProbeUnit(t, root)
 	t.Setenv("TMPDIR", root)
-	pattern := "/sys/fs/cgroup/user.slice/user-*.slice/user@*.service/app.slice/sre-bun-*.scope/cgroup.procs"
-	before, _ := filepath.Glob(pattern)
-	known := map[string]bool{}
-	for _, path := range before {
-		known[path] = true
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	watched := make(chan struct{})
+	ownedScope := ""
 	go func() {
 		defer close(watched)
 		ticker := time.NewTicker(time.Millisecond)
@@ -310,12 +361,14 @@ func TestActualCanceledProbeState(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				paths, _ := filepath.Glob(pattern)
-				for _, path := range paths {
-					if !known[path] {
-						cancel()
-						return
-					}
+				path, err := probeScopePath(unitFile)
+				if err != nil {
+					continue
+				}
+				if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+					ownedScope = path
+					cancel()
+					return
 				}
 			}
 		}
@@ -325,20 +378,19 @@ func TestActualCanceledProbeState(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, collect.ErrCodeUnavailable) {
 		t.Fatalf("probe cancellation=%v", err)
 	}
+	if ownedScope == "" {
+		t.Fatal("tested Probe never entered its own live scope")
+	}
 	paths, _ := filepath.Glob(filepath.Join(root, "sre-bun-*"))
 	t.Logf("canceled Probe retained temporary directories=%d; success was not reported", len(paths))
 	deadline := time.Now().Add(time.Second)
 	for {
-		paths, _ := filepath.Glob(pattern)
-		live := false
-		for _, path := range paths {
-			if !known[path] {
-				data, _ := os.ReadFile(path)
-				live = live || len(strings.TrimSpace(string(data))) > 0
-			}
+		data, readErr := os.ReadFile(ownedScope)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
 		}
-		if !live {
-			t.Log("canceled Probe has no live process in newly created scope")
+		if len(strings.TrimSpace(string(data))) == 0 {
+			t.Log("canceled Probe has no live process in its owned scope")
 			break
 		}
 		if time.Now().After(deadline) {
@@ -424,7 +476,9 @@ func TestActualProbeReservedExecutionDeadline(t *testing.T) {
 	if os.Getenv("SRE_REQUIRE_BUN_RUNTIME") != "1" && os.Getenv("SRE_TEST_BUN_RUNTIME") != "1" {
 		t.Skip("opt in")
 	}
+	unrelatedProbeScope(t)
 	root := t.TempDir()
+	unitFile := recordProbeUnit(t, root)
 	systemctl, err := exec.LookPath("systemctl")
 	if err != nil {
 		t.Fatal(err)
@@ -436,32 +490,28 @@ func TestActualProbeReservedExecutionDeadline(t *testing.T) {
 	}
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMPDIR", root)
-	pattern := "/sys/fs/cgroup/user.slice/user-*.slice/user@*.service/app.slice/sre-bun-*.scope/cgroup.procs"
-	before, _ := filepath.Glob(pattern)
-	known := map[string]bool{}
-	for _, path := range before {
-		known[path] = true
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err = New().Probe(ctx)
 	if !errors.Is(err, collect.ErrCodeUnavailable) || ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("reserved deadline error=%v caller=%v", err, ctx.Err())
 	}
+	ownedScope, readErr := probeScopePath(unitFile)
+	if readErr != nil {
+		t.Fatalf("tested Probe never launched its own scope: %v", readErr)
+	}
 	paths, _ := filepath.Glob(filepath.Join(root, "sre-bun-*"))
 	if len(paths) != 0 {
 		t.Fatalf("reserved deadline retained %d directories", len(paths))
 	}
-	paths, _ = filepath.Glob(pattern)
-	for _, path := range paths {
-		if !known[path] {
-			data, _ := os.ReadFile(path)
-			if len(strings.TrimSpace(string(data))) != 0 {
-				t.Fatalf("reserved deadline retained live scope %s", data)
-			}
-		}
+	data, readErr := os.ReadFile(ownedScope)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
 	}
-	t.Log("reserved execution deadline expired; caller remains live, private directories removed, no live new scope")
+	if len(strings.TrimSpace(string(data))) != 0 {
+		t.Fatalf("reserved deadline retained live scope %s", data)
+	}
+	t.Log("reserved execution deadline expired; caller remains live, private directories removed, no live owned scope")
 }
 
 func TestActualRuntimePendingFinalDuringReply(t *testing.T) {

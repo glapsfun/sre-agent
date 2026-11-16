@@ -160,44 +160,65 @@ func runSources(args []string, stdin io.Reader, stdout, stderr io.Writer, now fu
 	if err == nil {
 		result, gaps, err = executeSources(context.Background(), opts, stdin, sources.Service{Now: now})
 	}
+	return presentSources(opts.format, result, gaps, err, stdout, stderr)
+}
+
+func presentSources(format string, result *sourceOutput, gaps []string, err error, stdout, stderr io.Writer) int {
 	envelope := Envelope{OK: err == nil, Data: result, Gaps: gaps, Errors: []string{}}
-	code := 0
 	if err != nil {
-		code = 1
 		envelope.Errors = append(envelope.Errors, safety.NewRedactor().Redact(err.Error()))
 	}
 	if result.Result != nil {
 		wrapper, wrapErr := safety.NewWrapper()
 		if wrapErr != nil {
 			result.Result = nil
+			envelope.OK = false
+			envelope.Errors = append(envelope.Errors, "Source result boundary unavailable.")
 			envelope.Gaps = append(envelope.Gaps, "Source result presentation unavailable; inspect the durable receipt if present.")
 		} else {
 			boundary := strings.Split(wrapper.Wrap("investigation sources", ""), "\n")
 			result.Begin, result.Finish = boundary[0], boundary[2]
 		}
 	}
-	encoded, encodeErr := json.Marshal(envelope)
-	if encodeErr != nil || len(encoded) > 2<<20 {
-		result.Result = nil
-		envelope.Gaps = append(envelope.Gaps, "Source result exceeded output budget; raw data omitted.")
-		encoded, _ = json.Marshal(envelope)
+	marshal := func() ([]byte, error) {
+		if format == "text" {
+			return json.MarshalIndent(envelope, "", "  ")
+		}
+		return json.Marshal(envelope)
 	}
-	if opts.format == "text" {
-		encoded, _ = json.MarshalIndent(envelope, "", "  ")
+	encoded, encodeErr := marshal()
+	if encodeErr != nil || len(encoded)+1 > 2<<20 {
+		result.Result = nil
+		result.Begin, result.Finish = "", ""
+		envelope.OK = false
+		envelope.Gaps = []string{fmt.Sprintf("Source result exceeded output budget or could not be encoded; raw data and %d gap details omitted.", len(envelope.Gaps))}
+		envelope.Errors = []string{"Source result presentation incomplete."}
+		encoded, encodeErr = marshal()
+	}
+	if encodeErr != nil || len(encoded)+1 > 2<<20 {
+		sourceWriteRecovery(stderr, result)
+		return 1
 	}
 	encoded = append(encoded, '\n')
 	n, writeErr := stdout.Write(encoded)
 	if writeErr != nil || n != len(encoded) {
-		if result.Saved {
-			fmt.Fprintln(stderr, "Source approval saved; output failed. Use sources list to inspect it.")
-		} else if result.Committed {
-			fmt.Fprintf(stderr, "Source evidence committed for run %s entry %s seq %d; output failed. Resume the run; do not repeat collection automatically.\n", result.RunID, result.EntryID, result.Seq)
-		} else {
-			fmt.Fprintln(stderr, "Source output failed; do not repeat a remote collection automatically.")
-		}
+		sourceWriteRecovery(stderr, result)
 		return 1
 	}
-	return code
+	if !envelope.OK {
+		return 1
+	}
+	return 0
+}
+
+func sourceWriteRecovery(stderr io.Writer, result *sourceOutput) {
+	if result.Saved {
+		fmt.Fprintln(stderr, "Source approval saved; output failed. Use sources list to inspect it.")
+	} else if result.Committed {
+		fmt.Fprintf(stderr, "Source evidence committed for run %s entry %s seq %d; output failed. Resume the run; do not repeat collection automatically.\n", result.RunID, result.EntryID, result.Seq)
+	} else {
+		fmt.Fprintln(stderr, "Source output failed; do not repeat a remote collection automatically.")
+	}
 }
 
 func executeSources(ctx context.Context, opts sourceOptions, stdin io.Reader, service sources.Service) (*sourceOutput, []string, error) {
