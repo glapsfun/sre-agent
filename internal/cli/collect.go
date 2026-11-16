@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/glapsfun/sre-agent/internal/coderuntime"
 	"github.com/glapsfun/sre-agent/internal/collect"
 	"github.com/glapsfun/sre-agent/internal/ledger"
 	"github.com/glapsfun/sre-agent/internal/safety"
@@ -112,7 +113,7 @@ type collectionOutput struct {
 }
 
 func runCollect(args []string, stdin io.Reader, stdout, stderr io.Writer, now func() time.Time) int {
-	return runCollectWithService(args, stdin, stdout, stderr, collect.Service{Sources: sources.Service{Now: now}})
+	return runCollectWithService(args, stdin, stdout, stderr, collect.Service{Sources: sources.Service{Now: now}, Runtime: coderuntime.New()})
 }
 
 func runCollectWithService(args []string, stdin io.Reader, stdout, stderr io.Writer, service collect.Service) int {

@@ -134,6 +134,8 @@ concise source evidence or explicit gaps. See the
 [source workflow](plugins/sre-agent/skills/sre-agent/references/approved-sources.md)
 for credentials, read-only access and the inventory format.
 
+### Collect approved evidence
+
 Collect an approved plan into an existing run:
 
 ```bash
@@ -155,12 +157,83 @@ one input may use `-` for stdin. Plans allow at most 32 calls across eight sourc
 with `independent`, `filter`, or `join` operations. Source IDs and tool names must
 match saved read-only approvals; `required` lists keys whose evidence is needed.
 
-The production code runtime is currently unavailable. Ordinary mode never runs
-the supplied program. Auto uses ordinary calls for short or independent plans
-and falls back to ordinary calls when code prerequisites are unavailable.
-Manual code mode records its unavailable-selection reason, including missing
-program, consent, source grant, credentials, or runtime, and exits nonzero.
-`--approve-code` does not install or enable a runtime.
+Ordinary mode never runs the supplied program or requires Bun. Auto uses ordinary
+calls for short or independent plans. For eligible multi-call filter/join plans,
+it uses the optional Bun runtime when program, code consent, source network grants,
+credentials and sandbox prerequisites are present. Otherwise it reports the
+missing prerequisite and uses ordinary calls. Manual code mode exits nonzero with
+that reason. Once code execution starts, failures retain partial evidence and
+explicit gaps without falling back to ordinary calls.
+
+### Optional Bun programs
+
+The runtime requires Linux amd64 or arm64, a dynamically linked Bun ELF binary
+version 1.4.2 or newer, `bwrap` (Bubblewrap), `systemd-run`, `systemctl`, `prlimit`,
+`env` and `ldd` on PATH. It also requires permitted user/network namespaces,
+seccomp, cgroup v2 memory/pids/cpu controllers, and a working systemd user manager
+with permission to create resource-limited scopes. A real sandbox probe checks
+these prerequisites before selection. No runtime is installed by `sre` or
+`--approve-code`; other platforms and missing prerequisites remain ordinary-only.
+
+Obtain the separate [source network approval](plugins/sre-agent/skills/sre-agent/references/approved-sources.md#optional-code-mode-network-authorization)
+and consent for the program before running:
+
+```bash
+sre collect --plan plan.json --program program.js --mode code --approve-code --run checkout-run --id collection-code-1 --repo "$incident_repo"
+```
+
+`program.js` is an async function body, not a module or a function declaration.
+This example preserves the approved tool records and adds references between
+records from different sources in the offline join:
+
+```javascript
+if (collection.phase === "source") {
+  const values = [];
+  for (const key of collection.keys) {
+    const response = await collection.call(key.key);
+    if (!response.ok) continue;
+    values.push({key: key.key, source_id: key.source_id, data: response.result.data});
+  }
+  return values;
+}
+return collection.values.map(value => ({
+  ...value,
+  data: {
+    record: value.data,
+    related: collection.values
+      .filter(other => other.source_id !== value.source_id)
+      .map(other => ({key: other.key, source_id: other.source_id}))
+  }
+}));
+```
+
+These references express association in the supplied plan, not a confirmed cause.
+Apply tool-specific schema checks before deriving incident facts. The helper
+returns `{ok, result}`, where `result` is
+`{source_id, tool, reference, at, data?, gaps}`. For MCP, `result.data` is the
+MCP tool-result envelope: `content`, optional `structuredContent`, and optional
+`isError` and other MCP result fields. For UTCP, it is the native JSON response.
+Check `ok` before using data; failures may include partial untrusted data and gaps.
+Required keys must still use their approved Go helpers to establish coverage.
+
+Each source phase receives only that source's planned keys and no other source's
+values. Go keeps the credentials and plan arguments; Bun receives neither.
+Source programs may use `fetch` to their separately approved host:port via the
+runtime proxy (`collection.proxy_url`). Native reads do not satisfy helper
+coverage by themselves. Multiple sources run in separate sandboxes; the final
+join receives bounded, redacted `collection.values` with no network or helpers.
+The full approved descriptor and network grant are snapshotted. Uncached source
+adapter calls recheck current approval against that snapshot; repeated planned
+keys reuse cached outcomes. A running phase uses its snapshotted network grant,
+so registry changes do not immediately revoke active native operations.
+
+See [runtime boundaries and limits](docs/architecture.md#bun-runtime-boundaries)
+and the [measured synthetic incident comparison](docs/code-mode-comparison.md).
+Local real-runtime tests are opt-in with `SRE_TEST_BUN_RUNTIME=1`;
+`SRE_REQUIRE_BUN_RUNTIME=1` makes missing prerequisites a failure. Execution
+failures after a successful probe always fail the tests.
+
+### Collection receipts and recovery
 
 Live results include untrusted-data boundaries, provenance, and explicit gaps.
 Required-key coverage does not establish factual correctness. After valid-input

@@ -58,9 +58,13 @@ deletion command. Review registry metadata before committing it.
 
 ## Optional Code Mode network authorization
 
-Code Mode execution is not yet implemented. This optional record saves a
-permission prerequisite only; it does not enable a runner or broaden ordinary
-`sources call` access beyond its approved endpoint and tools.
+The orchestrator can run optional Bun programs through the existing
+[`sre collect` command](../../../../../README.md#optional-bun-programs).
+Read its program-body, helper-envelope and Linux prerequisite documentation
+before proposing code execution. This optional record authorizes a source
+destination separately from per-program `--approve-code` consent. It does not
+broaden ordinary `sources call` access beyond its approved endpoint and tools,
+install a runtime, or change the investigators' seven-read allowlist.
 
 To request separate host:port authorization, add `code_network` to an explicit
 selected `mcp-http` or `utcp-http` descriptor with a valid, nonempty
@@ -85,7 +89,19 @@ The grant's nonsecret `access_ref`, at most 512 bytes, attests that the provider
 enforces a read-only identity and that unauthenticated access at this host:port
 cannot mutate infrastructure across protocols. It is operator policy attestation,
 not verified IAM. The source's own `access_ref` and read-only tool checks still
-apply; a future runner must also enforce its runtime and per-run prerequisites.
+apply. The Bun runner also enforces sandbox and per-run consent prerequisites.
+Credentials remain in Go; native Bun requests have only the independently
+approved destination, so this anonymous-access attestation matters. Source
+phases are isolated and the final cross-source join is offline. The host proxy
+audits observed destinations, not namespace-blocked attempts or TLS methods.
+See [runtime limits and audit scope](../../../../../docs/architecture.md#bun-runtime-boundaries)
+and the [synthetic comparison](../../../../../docs/code-mode-comparison.md).
+Auto can select ordinary calls when prerequisites are missing; manual code
+reports the missing prerequisite. No fallback occurs after code execution starts.
+Each collection snapshots source grants. Uncached source adapter calls recheck
+current approval against the snapshot; repeated planned keys reuse cached
+outcomes. A running phase retains its snapshotted network grant, so registry
+changes do not immediately revoke active native operations.
 
 Present the wider scope and obtain both approvals before saving it:
 
