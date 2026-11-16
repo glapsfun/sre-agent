@@ -297,6 +297,29 @@ func TestProxyTargets(t *testing.T) {
 	}
 }
 
+// Reading CONNECT's response can precede the writer settling its reservation.
+// Seed only after that accounting completes, while fixture payloads are gated.
+func seedProxyBytes(t *testing.T, b *proxyBudget, n int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for {
+		b.mu.Lock()
+		if b.reserved == 0 {
+			b.bytes = n
+			b.mu.Unlock()
+			return
+		}
+		changed := b.changed
+		b.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatal("CONNECT byte reservation did not settle")
+		}
+	}
+}
+
 func TestProxyByteLimits(t *testing.T) {
 	t.Run("real streamed exhaustion", func(t *testing.T) {
 		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -347,9 +370,7 @@ func TestProxyByteLimits(t *testing.T) {
 		if _, e := http.ReadResponse(br, nil); e != nil {
 			t.Fatal(e)
 		}
-		b.mu.Lock()
-		b.bytes = (32 << 20) - 4
-		b.mu.Unlock()
+		seedProxyBytes(t, b, (32<<20)-4)
 		close(ready)
 		data, e := io.ReadAll(br)
 		if e != nil || string(data) != "abcd" {
@@ -394,9 +415,7 @@ func TestProxyByteLimits(t *testing.T) {
 			readers = append(readers, br)
 		}
 		peers.Wait()
-		b.mu.Lock()
-		b.bytes = (32 << 20) - 8
-		b.mu.Unlock()
+		seedProxyBytes(t, b, (32<<20)-8)
 		close(ready)
 		for _, br := range readers {
 			data, e := io.ReadAll(br)
@@ -470,9 +489,7 @@ func TestProxyByteLimitsBothDirections(t *testing.T) {
 	if _, e := http.ReadResponse(br, nil); e != nil {
 		t.Fatal(e)
 	}
-	b.mu.Lock()
-	b.bytes = (32 << 20) - 8
-	b.mu.Unlock()
+	seedProxyBytes(t, b, (32<<20)-8)
 	io.WriteString(c, "abcd")
 	got, e := io.ReadAll(br)
 	if e != nil || string(got) != "abcd" {
@@ -550,9 +567,7 @@ func TestProxyIdleAtByteCap(t *testing.T) {
 	if _, e := http.ReadResponse(br, nil); e != nil {
 		t.Fatal(e)
 	}
-	b.mu.Lock()
-	b.bytes = (32 << 20) - 1
-	b.mu.Unlock()
+	seedProxyBytes(t, b, (32<<20)-1)
 	io.WriteString(c, "x")
 	waitFor(t, func() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.bytes == 32<<20 })
 	select {
